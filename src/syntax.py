@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 
 class JSONSyntaxTokenIDs:
@@ -10,7 +11,8 @@ class JSONSyntaxTokenIDs:
         self.curly_close = self._get_id("}")
         self.colon = self._get_id(":")
         self.comma = self._get_id(",")
-        self.quotes = self._get_id('"')
+        self.double_quotes = self._get_id('"')
+        self.single_quotes = self._get_id("'")
         self.square_open = self._get_id("[")
         self.square_close = self._get_id("]")
 
@@ -25,7 +27,8 @@ class JSONSyntaxTokenIDs:
             "}": self.curly_close,
             ":": self.colon,
             ",": self.comma,
-            '"': self.quotes,
+            '"': self.double_quotes,
+            "'": self.single_quotes,
             "[": self.square_open,
             "]": self.square_close
         }
