@@ -6,7 +6,9 @@ from .syntax import JSONSyntaxTokenIDs
 class JSONState(Enum):
     START = auto()
     EXPECT_KEY = auto()
+    START_KEY = auto()
     IN_KEY = auto()
+    END_KEY = auto()
     EXPECT_COLON = auto()
     IN_VALUE = auto()
     NEXT_OR_CLOSE = auto()
@@ -30,6 +32,10 @@ class JSONStateMachine:
                 return {self.syntax.square_open}
             case JSONState.EXPECT_KEY:
                 return {self.syntax.curly_open}
+            case JSONState.START_KEY:
+                return {self.syntax.double_quotes, self.syntax.single_quotes}
+            case JSONState.END_KEY:
+                return {self.syntax.double_quotes, self.syntax.single_quotes}
             case JSONState.EXPECT_COLON:
                 return {self.syntax.colon}
             case JSONState.NEXT_OR_CLOSE:
@@ -46,13 +52,18 @@ class JSONStateMachine:
 
     def update_state(self, token_str: str) -> None:
         self.buffer += token_str
+        fixed_prefix = '[\n\t{\n\t\t"prompt": "'
         while True:
             prev_state = self.state
             match self.state:
                 case JSONState.START:
-                    if "[\n" in self.buffer:
-                        self.buffer = self.buffer[self.buffer.index("[") + 1:]
-                        self.state = JSONState.EXPECT_KEY
+                    if not fixed_prefix.startswith(self.buffer):
+                        raise ValueError("Invalid starting sequence: "
+                                         f"'{self.buffer}'")
+                    if len(self.buffer) >= len(fixed_prefix):
+                        self.buffer = self.buffer[len(fixed_prefix):]
+                        self.state = JSONState.IN_VALUE
+            
+            match JSONState.
             if self.state == prev_state:
                 break
-

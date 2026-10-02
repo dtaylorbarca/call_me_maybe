@@ -1,9 +1,11 @@
 import json
-from typing import Any, Dict, List, Optional
+from typing_extensions import Self
+from typing import Any, Dict, List
 from pydantic import (
     BaseModel,
     Field,
     ValidationError,
+    model_validator,
 )
 
 
@@ -42,9 +44,30 @@ class FunctionCallOutput(BaseModel):
     parameters: Dict[str, Any]
 
 
-class TestCase(BaseModel):
+class UserQuery(BaseModel):
     """Schema for evaluating function calling against prompts."""
     prompt: str
+
+    @model_validator(mode="after")
+    def escape_validity(self) -> Self:
+        valid_chr = {'"', "\\", "/", "b", "f", "n", "r", "t", "u"}
+        escaped = False
+
+        for c in self.prompt:
+            if escaped:
+                if c not in valid_chr:
+                    raise ValueError(
+                        f"Invalid escape sequence '\\{c}' in prompt "
+                        f"'{self.prompt}'. JSON only permits \\\", \\\\, "
+                        "\\/, \\b, \\f, \\n, \\r, \\t, or \\uXXXX."
+                    )
+                escaped = False
+            elif c == "\\":
+                escaped = True
+        if escaped:
+            raise ValueError("Prompt ends with a dangling backslash; "
+                             f"'{self.prompt}'")
+        return self
 
 
 def load_functions_definition(file_path: str) -> List[FunctionTool]:
@@ -63,12 +86,12 @@ def load_functions_definition(file_path: str) -> List[FunctionTool]:
     return tools
 
 
-def load_test_cases(file_path: str) -> List[TestCase]:
+def load_user_queries(file_path: str) -> List[UserQuery]:
     """Loads and validates test cases from a JSON file."""
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        tests = [TestCase(**test) for test in data]
+        tests = [UserQuery(**test) for test in data]
     except (
         json.decoder.JSONDecodeError,
         OSError,
