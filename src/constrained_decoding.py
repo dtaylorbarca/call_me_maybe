@@ -3,9 +3,10 @@ from ..llm_sdk.llm_sdk import Small_LLM_Model
 
 
 def constrained_decoding(model: Small_LLM_Model, fsm: JSONStateMachine,
-                         initial_input_ids: list[int]) -> str:
+                         initial_input_ids: list[int], user_query: str) -> str:
 
     input_ids = initial_input_ids
+    fsm.user_query = user_query
     while fsm.state != JSONState.END:
         allowed_tokens = fsm.get_allowed_token_ids()
         if not allowed_tokens:

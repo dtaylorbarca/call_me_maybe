@@ -19,10 +19,6 @@ class FunctionTool(BaseModel):
     parameters: Dict[str, dict[str, str]] = Field(default_factory=dict)
     returns: Dict[str, str] = Field(default_factory=dict)
 
-    def get_params(self) -> set[str]:
-        params = set()
-        return params.union(self.parameters)
-
     def to_system_prompt_snippet(self) -> str:
         """
         Converts the tool definition into a clean formatted string for the

@@ -57,7 +57,7 @@ def main() -> None:
     fsm = JSONStateMachine(tools, syntax_ids)
     for prompt in prompts:
         ids = model.encode(format_qwen_system_prompt(tools, prompt))
-        output_object = constrained_decoding(model, fsm, ids)
+        output_object = constrained_decoding(model, fsm, ids, prompt.prompt)
         with open(args.output, "w+") as f:
             f.write(output_object)
 
