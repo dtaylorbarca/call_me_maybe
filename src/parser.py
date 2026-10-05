@@ -5,7 +5,6 @@ from pydantic import (
     BaseModel,
     Field,
     ValidationError,
-    model_validator,
     ConfigDict,
     field_validator
 )
@@ -78,6 +77,7 @@ def load_functions_definition(file_path: str) -> List[FunctionTool]:
         json.decoder.JSONDecodeError,
         OSError,
         ValidationError,
+        UnicodeDecodeError,
     ) as e:
         print(e)
         exit(1)
@@ -94,6 +94,7 @@ def load_user_queries(file_path: str) -> List[UserQuery]:
         json.decoder.JSONDecodeError,
         OSError,
         ValidationError,
+        UnicodeDecodeError,
     ) as e:
         print(e)
         exit(1)
