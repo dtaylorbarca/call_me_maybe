@@ -18,7 +18,12 @@ def valid_json_input_file(path_str: str) -> Path:
 
     try:
         with open(path_str, encoding="utf-8") as f:
-            json.load(f)
+            data = json.load(f)
+            if not data:
+                raise argparse.ArgumentTypeError(
+                    f"'{path_str}' is an empty file"
+                )
+
     except json.JSONDecodeError as e:
         raise argparse.ArgumentTypeError(
             f"File '{path_str}' is not a valid JSON. ERROR: {e}"

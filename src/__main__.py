@@ -4,11 +4,11 @@ from .parser import (
     FunctionTool,
     UserQuery,
 )
-from llm_sdk import Small_LLM_Model
+from ..llm_sdk.llm_sdk import Small_LLM_Model
 from .arg_parser import parse_args
 from syntax import JSONSyntaxTokenIDs
 from fsm import JSONStateMachine
-
+from constrained_decoding import constrained_decoding
 
 def format_qwen_system_prompt(tools: list[FunctionTool],
                               user_query: UserQuery) -> str:
@@ -55,8 +55,8 @@ def main() -> None:
     syntax_ids = JSONSyntaxTokenIDs(str(model.get_path_to_vocab_file))
     fsm = JSONStateMachine(tools, syntax_ids)
     for prompt in prompts:
-        model.encode(format_qwen_system_prompt(tools, prompt))
-        run_constrained_decoding(model, fsm)
+        ids = model.encode(format_qwen_system_prompt(tools, prompt))
+        constrained_decoding(model, fsm, ids)
 
 
 if __name__ == "__main__":

@@ -1,20 +1,24 @@
 import json
 from typing_extensions import Self
-from typing import Any, Dict, List
+from typing import Dict, List
 from pydantic import (
     BaseModel,
     Field,
     ValidationError,
     model_validator,
+    ConfigDict,
+    field_validator
 )
 
 
 class FunctionTool(BaseModel):
     """Schema representing a single callable tool available to the model."""
-    name: str
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
     description: str
-    parameters: Dict[str, Any] = Field(default_factory=dict)
-    returns: Dict[str, Any] = Field(default_factory=dict)
+    parameters: Dict[str, dict[str, str]] = Field(default_factory=dict)
+    returns: Dict[str, str] = Field(default_factory=dict)
 
     def get_params(self) -> set[str]:
         params = set()
@@ -38,17 +42,11 @@ class FunctionTool(BaseModel):
                 f"Parameters:\n{props_str}\nReturns:\n  - {return_type}")
 
 
-class FunctionCallOutput(BaseModel):
-    """Expected function call output schema."""
-    name: str
-    parameters: Dict[str, Any]
-
-
 class UserQuery(BaseModel):
     """Schema for evaluating function calling against prompts."""
     prompt: str
 
-    @model_validator(mode="after")
+    @field_validator("prompt")
     def escape_validity(self) -> Self:
         valid_chr = {'"', "\\", "/", "b", "f", "n", "r", "t", "u"}
         escaped = False
