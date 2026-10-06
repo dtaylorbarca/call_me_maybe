@@ -3,7 +3,7 @@ from .parser import FunctionTool
 from .syntax import JSONSyntaxTokenIDs
 from ..llm_sdk.llm_sdk import Small_LLM_Model
 from typing import Any
-
+from .decoder import TokenDecoder
 
 class JSONState(Enum):
     START = auto()
@@ -34,9 +34,10 @@ class JSONStateMachine:
         self.state: JSONState = JSONState.START
         self.emitted_ids: set[str] = set()
         self.selected_tool: FunctionTool | None = None
-        self.buffer: str = ""
+        self.buffer = ""
         self.key = JSONKeys.NAME
-        self.user_query: str = ""
+        self.user_query = ""
+        self.decoder = TokenDecoder(self.syntax.vocab)
 
     def _get_allowed_start_tokens(self) -> set[int]:
         fixed_prefix = '[\n\t{\n\t\t"prompt": "'
@@ -56,7 +57,6 @@ class JSONStateMachine:
         allowed = set()
         current_len = len(self.buffer)
         target_key = self.key
-
         remaining = target_key[current_len:]
 
         for token_text, token_id in self.syntax.vocab.items():
@@ -75,11 +75,24 @@ class JSONStateMachine:
         for token_text, token_id in self.syntax.vocab.items():
             if not token_text:
                 continue
-            for tool in self.tools:
+            for tool, _ in self.tools.items():
                 if (tool[current_len:].startswith(token_text) or
                         token_text.startswith(tool[current_len:])):
                     allowed.add(token_id)
+
         return allowed
+
+    def _get_allowed_param_tokens(self) -> set[int]:
+        allowed = set()
+        {}
+
+        current_len = len(self.buffer)
+        if self.selected_tool:
+            for token_text, token_id in self.syntax.vocab.items():
+                if not token_text:
+                    continue
+                
+
 
     def _get_allowed_value_tokens(self) -> set[int]:
         current_len = len(self.buffer)
@@ -99,7 +112,7 @@ class JSONStateMachine:
 
             case JSONKeys.PARAMETERS:
                 if self.selected_tool:
-
+                    allowed = self._get_allowed_param_tokens()
 
         return allowed
 
@@ -157,7 +170,7 @@ class JSONStateMachine:
 
                 case JSONState.EXPECT_KEY:
                     if '"' in self.buffer:
-                        self.buffer = self.buffer[self.buffer.index('"') + 1:]
+                        self.buffer = self.buffer[self.buffer.index('"') + 1:] 
                         self.state = JSONState.IN_KEY
 
                 case JSONState.IN_KEY:
@@ -201,8 +214,28 @@ class JSONStateMachine:
             if self.state == prev_state:
                 break
 
+    def constrained_decoding(self, model: Small_LLM_Model,
+                             initial_input_ids: list[int], user_query: str
+                             ) -> str:
+        input_ids = initial_input_ids
+        self.user_query = user_query
+        while self.state != JSONState.END:
+            allowed_tokens = self.get_allowed_token_ids()
+            if not allowed_tokens:
+                raise RuntimeError(
+                    "FSM reached a dead end with no allowed tokens")
+            logits = model.get_logits_from_input_ids(input_ids)
+            next_token_id = max(
+                allowed_tokens, key=lambda token_id: logits[token_id]
+            )
+            token_str = self.decoder.decode_token(next_token_id)
+            self.update_state(token_str)
+            input_ids.append(next_token_id)
+
+        return self.get_final_output(model, input_ids, initial_input_ids)
+
     def get_final_output(self, model: Small_LLM_Model, output_ids: list[int],
                          initial_input_ids: list[int]) -> str:
 
         output_ids = output_ids[len(initial_input_ids):]
-        return model.decode(output_ids)
+        return self.decoder.
