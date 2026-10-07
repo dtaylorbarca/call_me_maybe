@@ -52,8 +52,7 @@ def main() -> None:
     tools = load_functions_definition(args.functions_definition)
     prompts = load_user_queries(args.input)
     print(type(prompts[0]))
-    syntax_ids = JSONSyntaxTokenIDs(str(model.get_path_to_vocab_file))
-    fsm = JSONStateMachine(tools, syntax_ids)
+    fsm = JSONStateMachine(tools, prompts, str(model.get_path_to_vocab_file))
     for prompt in prompts:
         ids = model.encode(format_qwen_system_prompt(tools, prompt))
         output_object = fsm.constrained_decoding(model, ids, prompt.prompt)

@@ -13,4 +13,3 @@ class TokenDecoder:
         clean_token = raw_token.replace(" ", " ")
         clean_token = clean_token.replace("Ġ", " ")
         return clean_token
-

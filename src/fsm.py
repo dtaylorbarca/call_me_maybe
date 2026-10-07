@@ -1,20 +1,18 @@
-from enum import Enum, auto
-from .parser import FunctionTool
-from .syntax import JSONSyntaxTokenIDs
 from ..llm_sdk.llm_sdk import Small_LLM_Model
-from typing import Any
+from .parser import FunctionTool, UserQuery
 from .decoder import TokenDecoder
+from enum import Enum, auto
+from typing import Any
+import json
+
 
 class JSONState(Enum):
     START = auto()
-    EXPECT_OBJECT_START = auto()
-    EXPECT_KEY = auto()
-    IN_KEY = auto()
-    END_KEY = auto()
-    EXPECT_COLON = auto()
-    EXPECT_VALUE = auto()
-    IN_VALUE = auto()
-    NEXT_OR_CLOSE = auto()
+    PROMPT = auto()
+    IN_NAME = auto()
+    AFTER_NAME = auto()
+    IN_PARAMS = auto()
+    NEXT = auto()
     END = auto()
 
 
@@ -25,131 +23,112 @@ class JSONKeys(str, Enum):
 
 
 class JSONStateMachine:
-    def __init__(self, tools: list[FunctionTool],
-                 syntax: JSONSyntaxTokenIDs) -> None:
+    def __init__(self, tools: list[FunctionTool], prompts: list[UserQuery],
+                 vocab_path: str) -> None:
+        with open(vocab_path, encoding="utf-8") as f:
+            self.vocab: dict[str, int] = json.load(f)
         self.tools: dict[str, Any] = {}
         for tool in tools:
             self.tools.update({tool.name: tool.parameters})
-        self.syntax = syntax
+        self.prompts: list[str] = [prompt.prompt for prompt in prompts]
         self.state: JSONState = JSONState.START
         self.emitted_ids: set[str] = set()
         self.selected_tool: FunctionTool | None = None
         self.buffer = ""
         self.key = JSONKeys.NAME
         self.user_query = ""
-        self.decoder = TokenDecoder(self.syntax.vocab)
+        self.decoder = TokenDecoder(self.vocab)
 
     def _get_allowed_start_tokens(self) -> set[int]:
-        fixed_prefix = '[\n\t{\n\t\t"prompt": "'
+        fixed_prefix = '[\n\t{\n\t\t"prompt": "' + self.user_query
+        fixed_prefix = fixed_prefix + ',\n\t\t\t"name": "'
         current_len = len(self.buffer)
         remaining = fixed_prefix[current_len:]
         allowed = set()
 
-        for token_text, token_id in self.syntax.vocab.items():
+        for token_text, token_id in self.vocab.items():
             if not token_text:
                 continue
+
             if (remaining.startswith(token_text) or
                     token_text.startswith(remaining)):
                 allowed.add(token_id)
+
         return allowed
 
     def _get_allowed_key_tokens(self) -> set[int]:
         allowed = set()
         current_len = len(self.buffer)
-        target_key = self.key
-        remaining = target_key[current_len:]
+        target_key_full_path = self.key + '": "'
+        remaining = target_key_full_path[current_len:]
 
-        for token_text, token_id in self.syntax.vocab.items():
+        for token_text, token_id in self.vocab.items():
             if not token_text:
                 continue
-            if (remaining.startswith(token_text) or
-                    token_text.startswith(remaining)):
+
+            if (remaining.startswith(token_text)):
                 allowed.add(token_id)
 
         return allowed
 
     def _get_allowed_name_tokens(self) -> set[int]:
         allowed = set()
-
         current_len = len(self.buffer)
-        for token_text, token_id in self.syntax.vocab.items():
+
+        for token_text, token_id in self.vocab.items():
             if not token_text:
                 continue
+
             for tool, _ in self.tools.items():
+                if self.user_query == self.prompts[-1]:
+                    tool_path = tool + '",\n\t\t}\n]'
+                else:
+                    tool_path = tool + '",\n\t\t},\n\t\t{\n\t\t\t"prompt": "'
+
                 if (tool[current_len:].startswith(token_text) or
                         token_text.startswith(tool[current_len:])):
                     allowed.add(token_id)
 
         return allowed
 
+    def _get_allowed_after_name_tokens(self) -> set[int]:
+        allowed = set()
+        current_len = len(self.buffer)
+        if self.selected_tool:
+            fixed_path = '",\n\t\t\t"parameters": {"' + self.tool.
+
+        for token_text, token_id in self.vocab.items():
+            if not token_text:
+                continue
+
+
     def _get_allowed_param_tokens(self) -> set[int]:
         allowed = set()
-        {}
 
         current_len = len(self.buffer)
         if self.selected_tool:
-            for token_text, token_id in self.syntax.vocab.items():
+            fixed_path = ''
+            for token_text, token_id in self.vocab.items():
                 if not token_text:
                     continue
-                
-
-
-    def _get_allowed_value_tokens(self) -> set[int]:
-        current_len = len(self.buffer)
-        allowed = set()
-
-        match self.key:
-            case JSONKeys.PROMPT:
-                remaining = self.user_query[current_len:]
-                for token_text, token_id in self.syntax.vocab.items():
-                    if not token_text:
-                        continue
-                    if (remaining.startswith(token_text) or
-                            token_text.startswith(remaining)):
-                        allowed.add(token_id)
-            case JSONKeys.NAME:
-                allowed = self._get_allowed_name_tokens()
-
-            case JSONKeys.PARAMETERS:
-                if self.selected_tool:
-                    allowed = self._get_allowed_param_tokens()
 
         return allowed
 
-    def get_allowed_token_ids(self) -> set[int]:
+    def _get_allowed_token_ids(self) -> set[int]:
         match self.state:
             case JSONState.START:
                 return self._get_allowed_start_tokens()
 
-            case JSONState.EXPECT_OBJECT_START:
-                return {self.syntax.curly_open}
+            case JSONState.IN_NAME:
+                return self._get_allowed_name_tokens()
 
-            case (JSONState.EXPECT_KEY | JSONState.END_KEY |
-                  JSONState.EXPECT_VALUE):
-                return {self.syntax.double_quotes}
-
-            case JSONState.IN_KEY:
-                return self._get_allowed_key_tokens()
-
-            case JSONState.EXPECT_COLON:
-                return {self.syntax.colon}
-
-            case JSONState.IN_VALUE:
-                return self._get_allowed_value_tokens()
-
-            case JSONState.NEXT_OR_CLOSE:
-                if self.key == JSONKeys.PARAMETERS:
-                    return {self.syntax.curly_close}
-                else:
-                    return {self.syntax.comma}
-
-            case JSONState.END:
-                return {self.syntax.square_close}
-
+            case JSONState.AFTER_NAME:
+                return self._get_allowed_after_name_tokens()
+            
             case _:
                 return set()
 
-    def update_state(self, token_str: str) -> None:
+    def _update_state(self, token_str: str) -> None:
         self.buffer += token_str
         fixed_prefix = '[\n\t{\n\t\t"prompt": "'
         while True:
@@ -161,55 +140,12 @@ class JSONStateMachine:
                                          f"'{self.buffer}'")
                     if len(self.buffer) >= len(fixed_prefix):
                         self.buffer = self.buffer[len(fixed_prefix):]
-                        self.state = JSONState.IN_VALUE
+                        self.state = JSONState.IN_NAME
 
-                case JSONState.EXPECT_OBJECT_START:
-                    if "{" in self.buffer:
-                        self.buffer = self.buffer[self.buffer.index("{") + 1:]
-                        self.state = JSONState.EXPECT_KEY
+                case JSONState.IN_NAME:
+                    return
 
-                case JSONState.EXPECT_KEY:
-                    if '"' in self.buffer:
-                        self.buffer = self.buffer[self.buffer.index('"') + 1:] 
-                        self.state = JSONState.IN_KEY
-
-                case JSONState.IN_KEY:
-                    target_key = self.key
-                    if len(self.buffer) >= len(target_key):
-                        self.buffer = self.buffer[len(target_key):]
-                        self.state = JSONState.END_KEY
-
-                case JSONState.END_KEY:
-                    if '"' in self.buffer:
-                        self.buffer = self.buffer[self.buffer.index('"') + 1:]
-                        self.state = JSONState.EXPECT_COLON
-
-                case JSONState.EXPECT_COLON:
-                    if ":" in self.buffer:
-                        self.buffer = self.buffer[self.buffer.index(": ") + 1:]
-                        self.state = JSONState.EXPECT_VALUE
-
-                case JSONState.EXPECT_VALUE:
-                    if '"' in self.buffer:
-                        self.buffer = self.buffer[self.buffer.index('"') + 1:]
-                        self.state = JSONState.NEXT_OR_CLOSE
-
-                case JSONState.IN_KEY:
-                    pass
-
-                case JSONState.NEXT_OR_CLOSE:
-                    if self.key == JSONKeys.PARAMETERS:
-                        if "}" in self.buffer:
-                            self.buffer = self.buffer[
-                                self.buffer.index("}") + 1:
-                            ]
-
-                    else:
-                        if "," in self.buffer:
-                            self.buffer = self.buffer[
-                                self.buffer.index(",") + 1:
-                            ]
-                            self.state = JSONState.EXPECT_OBJECT_START
+                case JSONState.
 
             if self.state == prev_state:
                 break
@@ -219,8 +155,9 @@ class JSONStateMachine:
                              ) -> str:
         input_ids = initial_input_ids
         self.user_query = user_query
+        self.state = JSONState.START
         while self.state != JSONState.END:
-            allowed_tokens = self.get_allowed_token_ids()
+            allowed_tokens = self._get_allowed_token_ids()
             if not allowed_tokens:
                 raise RuntimeError(
                     "FSM reached a dead end with no allowed tokens")
@@ -229,7 +166,7 @@ class JSONStateMachine:
                 allowed_tokens, key=lambda token_id: logits[token_id]
             )
             token_str = self.decoder.decode_token(next_token_id)
-            self.update_state(token_str)
+            self._update_state(token_str)
             input_ids.append(next_token_id)
 
         return self.get_final_output(model, input_ids, initial_input_ids)
@@ -238,4 +175,4 @@ class JSONStateMachine:
                          initial_input_ids: list[int]) -> str:
 
         output_ids = output_ids[len(initial_input_ids):]
-        return self.decoder.
+        return model.decode(output_ids)
