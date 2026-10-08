@@ -16,10 +16,11 @@ class JSONState(Enum):
     END = auto()
 
 
-class JSONKeys(str, Enum):
-    PROMPT = "prompt"
-    NAME = "name"
-    PARAMETERS = "parameters"
+START_PATH = '[\n\t\t{\n\t\t\t"prompt": "'
+AFTER_PROMPT_PATH = ',\n\t\t\t"name": "'
+AFTER_NAME_PATH = '",\n\t\t\t"parameters": {'
+NEXT_PATH = '}\n\t\t},\n\t\t{\n\t\t\t"prompt": "'
+END_PATH = ''
 
 
 class JSONStateMachine:
@@ -35,13 +36,11 @@ class JSONStateMachine:
         self.emitted_ids: set[str] = set()
         self.selected_tool: FunctionTool | None = None
         self.buffer = ""
-        self.key = JSONKeys.NAME
         self.user_query = ""
         self.decoder = TokenDecoder(self.vocab)
 
     def _get_allowed_start_tokens(self) -> set[int]:
-        fixed_prefix = '[\n\t{\n\t\t"prompt": "' + self.user_query
-        fixed_prefix = fixed_prefix + ',\n\t\t\t"name": "'
+        fixed_prefix = START_PATH + self.user_query + AFTER_PROMPT_PATH
         current_len = len(self.buffer)
         remaining = fixed_prefix[current_len:]
         allowed = set()
@@ -56,21 +55,6 @@ class JSONStateMachine:
 
         return allowed
 
-    def _get_allowed_key_tokens(self) -> set[int]:
-        allowed = set()
-        current_len = len(self.buffer)
-        target_key_full_path = self.key + '": "'
-        remaining = target_key_full_path[current_len:]
-
-        for token_text, token_id in self.vocab.items():
-            if not token_text:
-                continue
-
-            if (remaining.startswith(token_text)):
-                allowed.add(token_id)
-
-        return allowed
-
     def _get_allowed_name_tokens(self) -> set[int]:
         allowed = set()
         current_len = len(self.buffer)
@@ -79,28 +63,30 @@ class JSONStateMachine:
             if not token_text:
                 continue
 
-            for tool, _ in self.tools.items():
-                if self.user_query == self.prompts[-1]:
-                    tool_path = tool + '",\n\t\t}\n]'
-                else:
-                    tool_path = tool + '",\n\t\t},\n\t\t{\n\t\t\t"prompt": "'
+            for tool_name in self.tools.keys():
+                target = tool_name + '"'
+                remaining_target = target[current_len:]
 
-                if (tool[current_len:].startswith(token_text) or
-                        token_text.startswith(tool[current_len:])):
+                if remaining_target.startswith(token_text) or token_text.startswith(remaining_target):
                     allowed.add(token_id)
+                    break
 
         return allowed
 
     def _get_allowed_after_name_tokens(self) -> set[int]:
         allowed = set()
         current_len = len(self.buffer)
-        if self.selected_tool:
-            fixed_path = '",\n\t\t\t"parameters": {"' + self.tool.
+        remaining = AFTER_NAME_PATH[current_len:]
 
         for token_text, token_id in self.vocab.items():
             if not token_text:
                 continue
 
+            if (remaining.startswith(token_text) or
+                    token_text.startswith(remaining)):
+                allowed.add(token_id)
+
+        return allowed
 
     def _get_allowed_param_tokens(self) -> set[int]:
         allowed = set()
@@ -124,28 +110,28 @@ class JSONStateMachine:
 
             case JSONState.AFTER_NAME:
                 return self._get_allowed_after_name_tokens()
-            
+
             case _:
                 return set()
 
     def _update_state(self, token_str: str) -> None:
         self.buffer += token_str
-        fixed_prefix = '[\n\t{\n\t\t"prompt": "'
         while True:
             prev_state = self.state
             match self.state:
                 case JSONState.START:
-                    if not fixed_prefix.startswith(self.buffer):
+                    if not START_PATH.startswith(self.buffer):
                         raise ValueError("Invalid starting sequence: "
                                          f"'{self.buffer}'")
-                    if len(self.buffer) >= len(fixed_prefix):
-                        self.buffer = self.buffer[len(fixed_prefix):]
+                    if len(self.buffer) >= len(START_PATH):
+                        self.buffer = self.buffer[len(START_PATH):]
                         self.state = JSONState.IN_NAME
+                        self.temp_tools = self.tools
 
                 case JSONState.IN_NAME:
-                    return
-
-                case JSONState.
+                    if '"' in self.buffer:
+                        quote_index = self.buffer.index('"')
+                        extracted_name = self.buffer[]
 
             if self.state == prev_state:
                 break
