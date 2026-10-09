@@ -1,9 +1,10 @@
 from ..llm_sdk.llm_sdk import Small_LLM_Model
 from .parser import FunctionTool, UserQuery
 from .decoder import TokenDecoder
+from .value_validation import DataTypeValidation
 from enum import Enum, auto
 import json
-from value_validation import DataTypeValidation
+import re
 
 
 class JSONState(Enum):
@@ -18,11 +19,10 @@ class JSONState(Enum):
     FINISHED = auto()
 
 
-START_PATH = '[\n\t\t{\n\t\t\t"prompt": "'
-AFTER_PROMPT_PATH = ',\n\t\t\t"name": "'
-AFTER_NAME_PATH = '",\n\t\t\t"parameters": {'
-NEXT_PATH = '}\n\t\t},\n\t\t{\n\t\t\t"prompt": "'
-END_PATH = '}\n\t\t}\n]'
+START_PATH = '[\n\t{\n\t\t"prompt": "'
+AFTER_PROMPT_PATH = ',\n\t\t"name": "'
+AFTER_NAME_PATH = '",\n\t\t"parameters": {'
+END_PATH = '}\n\t}\n]'
 
 
 class JSONStateMachine:
@@ -31,7 +31,7 @@ class JSONStateMachine:
         with open(vocab_path, encoding="utf-8") as f:
             self.vocab: dict[str, int] = json.load(f)
         self.tools: list[FunctionTool] = tools
-        self.prompts: list[str] = [prompt.prompt for prompt in prompts]
+        self.prompts: list[UserQuery] = prompts
         self.state: JSONState = JSONState.START
         self.selected_tool: FunctionTool | None = None
         self.buffer = ""
@@ -169,13 +169,19 @@ class JSONStateMachine:
                 return self._get_allowed_value_tokens()
 
             case JSONState.NEXT:
-                return self._get_allowed_determ_tokens(NEXT_PATH)
+                return self._get_allowed_determ_tokens(self.next_path)
 
             case JSONState.END:
                 return self._get_allowed_determ_tokens(END_PATH)
 
             case _:
                 return set()
+
+    def _build_next_path(self, next_prompt_text: str) -> str:
+        return (
+            f'}},\n<|im_end|>\n<|im_start|>user\n{next_prompt_text}<|im_end|>'
+            '\n  {\n\t\t"prompt": "'
+        )
 
     def _update_state(self, token_str: str) -> None:
         self.buffer += token_str
@@ -264,8 +270,11 @@ class JSONStateMachine:
                                 self.state = JSONState.END
 
                 case JSONState.NEXT:
-                    if len(self.buffer) >= len(NEXT_PATH):
-                        self.buffer = self.buffer[len(NEXT_PATH):]
+                    next_prompt = self.prompts[
+                        len(self.finished_prompts)].prompt
+                    self.next_path = self._build_next_path(next_prompt)
+                    if len(self.buffer) >= len(self.next_path):
+                        self.buffer = self.buffer[len(self.next_path):]
                         self.used_params = []
                         self.selected_tool = None
                         self.state = JSONState.PROMPT
@@ -281,17 +290,23 @@ class JSONStateMachine:
                 break
 
     def constrained_decoding(self, model: Small_LLM_Model,
-                             initial_input_ids: list[int], user_query: str
-                             ) -> str:
-        input_ids = initial_input_ids
-        self.user_query = user_query
-        self.state = JSONState.START
-        while (self.state != JSONState.NEXT or self.state != JSONState.END or
-               JSONState.FINISHED):
+                             initial_input_ids: list[int]) -> str:
+        input_ids = list(initial_input_ids)
+        prompt_idx = 0
+        if self.prompts:
+            self.user_query = self.prompts[prompt_idx].prompt
+
+        while JSONState.FINISHED:
+            if self.state == JSONState.NEXT and self.buffer == "":
+                prompt_idx += 1
+                if prompt_idx < len(self.prompts):
+                    self.user_query = self.prompts[prompt_idx].prompt
+
             allowed_tokens = self._get_allowed_token_ids()
             if not allowed_tokens:
                 raise RuntimeError(
-                    "FSM reached a dead end with no allowed tokens")
+                    "FSM reached a dead end with no allowed tokens"
+                )
             logits = model.get_logits_from_input_ids(input_ids)
             next_token_id = max(
                 allowed_tokens, key=lambda token_id: logits[token_id]
@@ -304,6 +319,12 @@ class JSONStateMachine:
 
     def get_final_output(self, model: Small_LLM_Model, output_ids: list[int],
                          initial_input_ids: list[int]) -> str:
+        generated_ids = output_ids[len(initial_input_ids):]
+        raw_text = model.decode(generated_ids)
 
-        output_ids = output_ids[len(initial_input_ids):]
-        return model.decode(output_ids)
+        pattern = (
+            r"<\|im_end\|>\s*<\|im_start\|>user.*?<\|im_start\|>assistant\s*"
+        )
+        clean_json_text = re.sub(pattern, "", raw_text, flags=re.DOTALL)
+
+        return clean_json_text.strip()

@@ -23,7 +23,49 @@ class FunctionTool(BaseModel):
 
     @model_validator(mode="after")
     def escape_validity(self) -> Self:
-        
+        validator = DataTypeValidation()
+
+        if not validator.is_valid_json_string(self.name):
+            raise ValueError(
+                f"The function name '{self.name}' is an invalid JSON string"
+            )
+        if not validator.is_valid_json_string(self.description):
+            raise ValueError(
+                f"The description of function '{self.name}' is an invalid JSON"
+                " string"
+            )
+
+        for param_name, param_schema in self.parameters.items():
+            if not validator.is_valid_json_string(param_name):
+                raise ValueError(
+                    f"Parameter name '{param_name}' in function '{self.name}' "
+                    "is an invalid JSON string"
+                )
+            for k, v in param_schema.items():
+                if not validator.is_valid_json_string(k):
+                    raise ValueError(
+                        f"Parameter property key '{k}' in parameter "
+                        f"'{param_name}' of function '{self.name}' is an "
+                        "invalid JSON string"
+                    )
+                if not validator.is_valid_json_string(v):
+                    raise ValueError(
+                        f"Parameter property value '{v}' in parameter "
+                        f"'{param_name}' of function '{self.name}' is an "
+                        "invalid JSON string"
+                    )
+
+        for ret_key, ret_val in self.returns.items():
+            if not validator.is_valid_json_string(ret_key):
+                raise ValueError(
+                    f"Returns key '{ret_key}' in function '{self.name}' is "
+                    "an invalid JSON string"
+                )
+            if not validator.is_valid_json_string(ret_val):
+                raise ValueError(
+                    f"Returns value '{ret_val}' in function '{self.name}' is "
+                    "an invalid JSON string"
+                )
 
         return self
 

@@ -3,7 +3,7 @@ class DataTypeValidation:
         if not s:
             return False
         import re
-        
+
         return bool(re.fullmatch(r"-?\d*\.?\d*", s))
 
     def is_valid_number(self, s: str) -> bool:
@@ -42,7 +42,8 @@ class DataTypeValidation:
                     if i + 5 >= n:
                         return True
                     hex_part = s[i + 2:i + 6]
-                    if not all(c in "0123456789abcdefABCDEF" for c in hex_part):
+                    if not all(
+                            c in "0123456789abcdefABCDEF" for c in hex_part):
                         return True
                     i += 6
                 else:
