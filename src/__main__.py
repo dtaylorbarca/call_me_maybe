@@ -4,9 +4,9 @@ from .parser import (
     FunctionTool,
     UserQuery,
 )
-from ..llm_sdk.llm_sdk import Small_LLM_Model
+from llm_sdk import Small_LLM_Model
 from .arg_parser import parse_args
-from fsm import JSONStateMachine
+from .fsm import JSONStateMachine
 
 
 def format_qwen_system_prompt(tools: list[FunctionTool],
@@ -52,7 +52,7 @@ def main() -> None:
     tools = load_functions_definition(args.functions_definition)
     prompts = load_user_queries(args.input)
 
-    fsm = JSONStateMachine(tools, prompts, str(model.get_path_to_vocab_file))
+    fsm = JSONStateMachine(tools, prompts, model.get_path_to_vocab_file())
 
     initial_text = format_qwen_system_prompt(tools, prompts[0])
     initial_input_ids = model.encode(initial_text)

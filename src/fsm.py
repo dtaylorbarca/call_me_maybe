@@ -1,9 +1,10 @@
-from ..llm_sdk.llm_sdk import Small_LLM_Model
+from llm_sdk import Small_LLM_Model
 from .parser import FunctionTool, UserQuery
 from .decoder import TokenDecoder
 from .value_validation import DataTypeValidation
 from enum import Enum, auto
 import json
+from pathlib import Path
 import re
 
 
@@ -28,7 +29,7 @@ END_PATH = '}\n\t}\n]'
 class JSONStateMachine:
     def __init__(self, tools: list[FunctionTool], prompts: list[UserQuery],
                  vocab_path: str) -> None:
-        with open(vocab_path, encoding="utf-8") as f:
+        with open(Path(vocab_path), encoding="utf-8") as f:
             self.vocab: dict[str, int] = json.load(f)
         self.tools: list[FunctionTool] = tools
         self.prompts: list[UserQuery] = prompts

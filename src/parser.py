@@ -9,7 +9,7 @@ from pydantic import (
     ConfigDict,
     field_validator
 )
-from value_validation import DataTypeValidation
+from .value_validation import DataTypeValidation
 
 
 class FunctionTool(BaseModel):
@@ -90,15 +90,6 @@ class FunctionTool(BaseModel):
 class UserQuery(BaseModel):
     """Schema for evaluating function calling against prompts."""
     prompt: str
-
-    @field_validator("prompt")
-    def escape_validity(self) -> Self:
-        validator = DataTypeValidation()
-        if validator.is_valid_json_string(self.prompt):
-            raise ValueError(
-                f"The prompt '{self.prompt}' is an invalid JSON string"
-            )
-        return self
 
 
 def load_functions_definition(file_path: str) -> List[FunctionTool]:
