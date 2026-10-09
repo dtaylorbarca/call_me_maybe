@@ -5,9 +5,11 @@ from pydantic import (
     BaseModel,
     Field,
     ValidationError,
+    model_validator,
     ConfigDict,
     field_validator
 )
+from value_validation import DataTypeValidation
 
 
 class FunctionTool(BaseModel):
@@ -18,6 +20,12 @@ class FunctionTool(BaseModel):
     description: str
     parameters: Dict[str, dict[str, str]] = Field(default_factory=dict)
     returns: Dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def escape_validity(self) -> Self:
+        
+
+        return self
 
     def to_system_prompt_snippet(self) -> str:
         """
@@ -43,23 +51,11 @@ class UserQuery(BaseModel):
 
     @field_validator("prompt")
     def escape_validity(self) -> Self:
-        valid_chr = {'"', "\\", "/", "b", "f", "n", "r", "t", "u"}
-        escaped = False
-
-        for c in self.prompt:
-            if escaped:
-                if c not in valid_chr:
-                    raise ValueError(
-                        f"Invalid escape sequence '\\{c}' in prompt "
-                        f"'{self.prompt}'. JSON only permits \\\", \\\\, "
-                        "\\/, \\b, \\f, \\n, \\r, \\t, or \\uXXXX."
-                    )
-                escaped = False
-            elif c == "\\":
-                escaped = True
-        if escaped:
-            raise ValueError("Prompt ends with a dangling backslash; "
-                             f"'{self.prompt}'")
+        validator = DataTypeValidation()
+        if validator.is_valid_json_string(self.prompt):
+            raise ValueError(
+                f"The prompt '{self.prompt}' is an invalid JSON string"
+            )
         return self
 
 

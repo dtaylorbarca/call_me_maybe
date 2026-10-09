@@ -3,6 +3,7 @@ from .parser import FunctionTool, UserQuery
 from .decoder import TokenDecoder
 from enum import Enum, auto
 import json
+from value_validation import DataTypeValidation
 
 
 class JSONState(Enum):
@@ -38,6 +39,7 @@ class JSONStateMachine:
         self.decoder = TokenDecoder(self.vocab)
         self.used_params: list[str] = []
         self.finished_prompts: list[str] = []
+        self.data_type_validator: DataTypeValidation = DataTypeValidation()
 
     def _get_allowed_determ_tokens(self, fixed_path: str) -> set[int]:
         allowed = set()
@@ -100,20 +102,49 @@ class JSONStateMachine:
         allowed = set()
         if not self.selected_tool or not self.current_param:
             return allowed
+        param_type = self.selected_tool.parameters[self.current_param].get(
+            "type")
+        is_last = len(self.used_params) == len(self.selected_tool.parameters)
+        suffix = "}" if is_last else ", "
+        string_suffix = '"}' if is_last else '", '
         for token_text, token_id in self.vocab.items():
-            param_type = self.selected_tool.parameters[self.current_param].get(
-                "type")
+            if not token_text:
+                continue
+
             if param_type == "string":
+                candidate = self.buffer + token_text
+
+                if string_suffix not in candidate:
+                    if self.data_type_validator.is_valid_json_string(
+                            candidate):
+                        allowed.add(token_id)
+
+                elif candidate.endswith(string_suffix):
+                    body = candidate[:-len(string_suffix)]
+                    if self.data_type_validator.is_valid_json_string(body):
+                        allowed.add(token_id)
 
             elif param_type == "number":
-                for c in token_text:
-                    try:
-                        int(c)
-                    except ValueError:
-                        if c != "." and c != "-":
-                            continue
+                candidate = self.buffer + token_text
+
+                if self.data_type_validator.is_valid_number_prefix(candidate):
+                    allowed.add(token_id)
+
+                elif candidate.endswith(suffix):
+                    number_part = candidate[:-len(suffix)]
+                    if self.data_type_validator.is_valid_number(number_part):
+                        allowed.add(token_id)
 
             elif param_type == "boolean":
+                targets = [f"true{suffix}", f"false{suffix}"]
+                current_len = len(self.buffer)
+
+                for target in targets:
+                    remaining = target[current_len:]
+                    if (remaining.startswith(token_text) or
+                            token_text.startswith(remaining)):
+                        allowed.add(token_id)
+        return allowed
 
     def _get_allowed_token_ids(self) -> set[int]:
         match self.state:
@@ -165,12 +196,21 @@ class JSONStateMachine:
                         quote_index = self.buffer.index('"')
                         extracted_name = self.buffer[:quote_index]
 
+                        matched = False
                         for tool in self.tools:
                             if extracted_name == tool.name:
                                 self.selected_tool = tool
-                                self.buffer = self.buffer[quote_index + 1:]
+                                matched = True
+                                break
 
+                        if matched:
+                            self.buffer = self.buffer[quote_index + 1:]
                             self.state = JSONState.AFTER_NAME
+                        else:
+                            raise ValueError(
+                                "Generated unknown tool name:"
+                                f"'{extracted_name}'"
+                            )
 
                 case JSONState.AFTER_NAME:
                     if len(self.buffer) >= len(AFTER_NAME_PATH):
@@ -178,11 +218,16 @@ class JSONStateMachine:
                         self.state = JSONState.IN_PARAMS
 
                 case JSONState.IN_PARAMS:
-                    if self.selected_tool and self.current_param:
+                    if (self.selected_tool and not
+                            self.selected_tool.parameters):
+                        self.finished_prompts.append(self.user_query)
+                        if len(self.finished_prompts) < len(self.prompts):
+                            self.state = JSONState.NEXT
+                        else:
+                            self.state = JSONState.END
+                    elif self.selected_tool and self.selected_tool.parameters:
                         for param_name in self.selected_tool.parameters.keys():
-                            if param_name in self.used_params:
-                                param_type = self.selected_tool.parameters[
-                                    self.current_param].get("type")
+                            if param_name not in self.used_params:
                                 expected_prefix = f'"{param_name}": '
                                 if self.buffer.startswith(expected_prefix):
                                     self.current_param = param_name
@@ -200,10 +245,17 @@ class JSONStateMachine:
                     has_bracket = "}" in self.buffer
 
                     if has_comma or has_bracket:
-                        delim_indx = self.buffer.index(
-                            ",") if has_comma else self.buffer.index("}")
-                        self.buffer = self.buffer[delim_indx:]
-                        if len(self.used_params) < len(self.selected_tool.parameters):
+                        if has_comma:
+                            delim_indx = self.buffer.index(",")
+                            self.buffer = self.buffer[delim_indx + 2:]
+                        else:
+                            delim_indx = self.buffer.index("}")
+                            self.buffer = self.buffer[delim_indx + 1:]
+
+                        self.current_param = None
+
+                        if (len(self.used_params) <
+                                len(self.selected_tool.parameters)):
                             self.state = JSONState.IN_PARAMS
                         else:
                             if len(self.finished_prompts) < len(self.prompts):
@@ -213,11 +265,13 @@ class JSONStateMachine:
 
                 case JSONState.NEXT:
                     if len(self.buffer) >= len(NEXT_PATH):
-                        self.buffer = self.buffer[len(NEXT_PATH)]
+                        self.buffer = self.buffer[len(NEXT_PATH):]
+                        self.used_params = []
+                        self.selected_tool = None
                         self.state = JSONState.PROMPT
 
                 case JSONState.END:
-                    if len(self.buffer) == len(END_PATH):
+                    if len(self.buffer) >= len(END_PATH):
                         self.state = JSONState.FINISHED
 
                 case JSONState.FINISHED:
@@ -232,7 +286,8 @@ class JSONStateMachine:
         input_ids = initial_input_ids
         self.user_query = user_query
         self.state = JSONState.START
-        while self.state != JSONState.FINISHED:
+        while (self.state != JSONState.NEXT or self.state != JSONState.END or
+               JSONState.FINISHED):
             allowed_tokens = self._get_allowed_token_ids()
             if not allowed_tokens:
                 raise RuntimeError(
