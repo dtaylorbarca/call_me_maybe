@@ -6,8 +6,7 @@ from pydantic import (
     Field,
     ValidationError,
     model_validator,
-    ConfigDict,
-    field_validator
+    ConfigDict
 )
 from .value_validation import DataTypeValidation
 

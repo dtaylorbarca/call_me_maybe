@@ -5,11 +5,19 @@ class TokenDecoder:
         }
 
     def decode_token(self, token_id: int) -> str:
-        """Converts a token ID back to its raw string representation."""
+        """Converts a token ID back to its raw string representation safely."""
         if token_id not in self.id_to_token:
             raise KeyError(f"Token ID {token_id} not found in vocabulary.")
 
         raw_token = self.id_to_token[token_id]
-        clean_token = raw_token.replace(" ", " ")
-        clean_token = clean_token.replace("Ġ", " ")
+
+        clean_token = raw_token.replace("Ġ", " ")
+
+        clean_token = clean_token.replace("Ċ", "\n")
+
+        try:
+            clean_token = clean_token.encode().decode('unicode_escape')
+        except Exception:
+            pass
+
         return clean_token

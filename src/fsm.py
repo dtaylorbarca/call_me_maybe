@@ -1,11 +1,11 @@
-from llm_sdk import Small_LLM_Model
+from .value_validation import DataTypeValidation
 from .parser import FunctionTool, UserQuery
 from .decoder import TokenDecoder
-from .value_validation import DataTypeValidation
+from llm_sdk import Small_LLM_Model
 from enum import Enum, auto
-import json
 from pathlib import Path
 import re
+import json
 
 
 class JSONState(Enum):
@@ -20,10 +20,10 @@ class JSONState(Enum):
     FINISHED = auto()
 
 
-START_PATH = '[\n\t{\n\t\t"prompt": "'
-AFTER_PROMPT_PATH = ',\n\t\t"name": "'
-AFTER_NAME_PATH = '",\n\t\t"parameters": {'
-END_PATH = '}\n\t}\n]'
+START_PATH = '[\n    {\n        "prompt": "'
+AFTER_PROMPT_PATH = '",\n        "name": "'
+AFTER_NAME_PATH = '",\n        "parameters": {'
+END_PATH = '}\n    }\n]'
 
 
 class JSONStateMachine:
@@ -36,7 +36,7 @@ class JSONStateMachine:
         self.state: JSONState = JSONState.START
         self.selected_tool: FunctionTool | None = None
         self.buffer = ""
-        self.user_query = ""
+        self.user_query = prompts[0].prompt
         self.decoder = TokenDecoder(self.vocab)
         self.used_params: list[str] = []
         self.finished_prompts: list[str] = []
@@ -47,12 +47,18 @@ class JSONStateMachine:
         current_len = len(self.buffer)
         remaining = fixed_path[current_len:]
 
+        if not remaining:
+            return allowed
+
         for token_text, token_id in self.vocab.items():
+            token_text = self.decoder.decode_token(token_id)
             if not token_text:
                 continue
 
-            if (remaining.startswith(token_text) or
-                    token_text.startswith(remaining)):
+            current_text = self.buffer + token_text
+            if remaining.startswith(token_text) or (
+                    token_text.startswith(remaining) and
+                    fixed_path.startswith(current_text)):
                 allowed.add(token_id)
 
         return allowed
@@ -62,6 +68,7 @@ class JSONStateMachine:
         current_len = len(self.buffer)
 
         for token_text, token_id in self.vocab.items():
+            token_text = self.decoder.decode_token(token_id)
             if not token_text:
                 continue
 
@@ -90,6 +97,7 @@ class JSONStateMachine:
             remaining_target = target[current_len:]
 
             for token_text, token_id in self.vocab.items():
+                token_text = self.decoder.decode_token(token_id)
                 if not token_text:
                     continue
 
@@ -103,54 +111,85 @@ class JSONStateMachine:
         allowed = set()
         if not self.selected_tool or not self.current_param:
             return allowed
-        param_type = self.selected_tool.parameters[self.current_param].get(
-            "type")
+
+        param_info = self.selected_tool.parameters.get(self.current_param, {})
+        param_type = param_info.get("type")
         is_last = len(self.used_params) == len(self.selected_tool.parameters)
-        suffix = "}" if is_last else ", "
-        string_suffix = '"}' if is_last else '", '
-        for token_text, token_id in self.vocab.items():
+
+        for token_id in self.vocab.values():
+            token_text = self.decoder.decode_token(token_id)
             if not token_text:
                 continue
 
+            candidate = self.buffer + token_text
+
             if param_type == "string":
-                candidate = self.buffer + token_text
-
-                if string_suffix not in candidate:
-                    if self.data_type_validator.is_valid_json_string(
-                            candidate):
+                if (self.data_type_validator.is_valid_json_string(self.buffer)
+                        and self.buffer.endswith('"')):
+                    if (is_last and (token_text.startswith("}") or
+                                     token_text.strip() == "")):
                         allowed.add(token_id)
-
-                elif candidate.endswith(string_suffix):
-                    body = candidate[:-len(string_suffix)]
-                    if self.data_type_validator.is_valid_json_string(body):
+                    elif (not is_last and (token_text.startswith(",") or
+                                           token_text.startswith(" ") or
+                                           token_text.startswith("\n"))):
+                        allowed.add(token_id)
+                else:
+                    is_prefix_func = getattr(
+                        self.data_type_validator,
+                        "is_valid_json_string_prefix",
+                        lambda x: True
+                    )
+                    if (self.data_type_validator.is_valid_json_string(
+                        candidate) or
+                            is_prefix_func(candidate)):
                         allowed.add(token_id)
 
             elif param_type == "number":
-                candidate = self.buffer + token_text
-
                 if self.data_type_validator.is_valid_number_prefix(candidate):
                     allowed.add(token_id)
-
-                elif candidate.endswith(suffix):
-                    number_part = candidate[:-len(suffix)]
-                    if self.data_type_validator.is_valid_number(number_part):
+                elif self.data_type_validator.is_valid_number(self.buffer):
+                    if (is_last and (token_text.startswith("}") or
+                                     token_text.strip() == "")):
+                        allowed.add(token_id)
+                    elif (not is_last and (token_text.startswith(",") or
+                                           token_text.startswith(" ") or
+                                           token_text.startswith("\n"))):
                         allowed.add(token_id)
 
             elif param_type == "boolean":
-                targets = [f"true{suffix}", f"false{suffix}"]
-                current_len = len(self.buffer)
+                target_vals = ["true", "false"]
+                matched_bool = False
 
-                for target in targets:
-                    remaining = target[current_len:]
-                    if (remaining.startswith(token_text) or
-                            token_text.startswith(remaining)):
+                for t in target_vals:
+                    full_target = f"{t}{'}' if is_last else ', '}"
+                    if (
+                        full_target.startswith(candidate) or
+                            candidate.startswith(full_target[:len(candidate)])
+                    ):
                         allowed.add(token_id)
+                        matched_bool = True
+                        break
+
+                if not matched_bool:
+                    for t in target_vals:
+                        if self.buffer == t:
+                            if (is_last and (token_text.startswith("}") or
+                                             token_text.strip() == "")):
+                                allowed.add(token_id)
+                            elif (not is_last and (
+                                    token_text.startswith(",") or
+                                    token_text.startswith(" ") or
+                                    token_text.startswith("\n"))):
+                                allowed.add(token_id)
+
         return allowed
 
     def _get_allowed_token_ids(self) -> set[int]:
         match self.state:
             case JSONState.START:
-                return self._get_allowed_determ_tokens(START_PATH)
+                return self._get_allowed_determ_tokens(
+                    START_PATH + self.user_query + AFTER_PROMPT_PATH
+                )
 
             case JSONState.PROMPT:
                 return self._get_allowed_determ_tokens(
@@ -190,13 +229,20 @@ class JSONStateMachine:
             prev_state = self.state
             match self.state:
                 case JSONState.START:
-                    if not START_PATH.startswith(self.buffer):
-                        raise ValueError("Invalid starting sequence: "
-                                         f"'{self.buffer}'")
-                    if len(self.buffer) >= len(START_PATH):
-                        self.buffer = self.buffer[len(START_PATH):]
+                    if len(self.buffer) >= len(
+                            START_PATH + self.user_query + AFTER_PROMPT_PATH):
+                        self.buffer = self.buffer[
+                            len(START_PATH + self.user_query +
+                                AFTER_PROMPT_PATH):]
                         self.state = JSONState.IN_NAME
                         self.temp_tools = self.tools
+
+                case JSONState.PROMPT:
+                    if len(self.buffer) >= len(
+                            self.user_query + AFTER_PROMPT_PATH):
+                        self.buffer = self.buffer[len(
+                            self.user_query + AFTER_PROMPT_PATH):]
+                        self.state = JSONState.IN_NAME
 
                 case JSONState.IN_NAME:
                     if '"' in self.buffer:
@@ -265,15 +311,19 @@ class JSONStateMachine:
                                 len(self.selected_tool.parameters)):
                             self.state = JSONState.IN_PARAMS
                         else:
+                            self.finished_prompts.append(self.user_query)
                             if len(self.finished_prompts) < len(self.prompts):
+                                next_prompt = self.prompts[
+                                    len(self.finished_prompts)
+                                ].prompt
+                                self.next_path = self._build_next_path(
+                                    next_prompt)
+                                self.user_query = next_prompt
                                 self.state = JSONState.NEXT
                             else:
                                 self.state = JSONState.END
 
                 case JSONState.NEXT:
-                    next_prompt = self.prompts[
-                        len(self.finished_prompts)].prompt
-                    self.next_path = self._build_next_path(next_prompt)
                     if len(self.buffer) >= len(self.next_path):
                         self.buffer = self.buffer[len(self.next_path):]
                         self.used_params = []
@@ -290,42 +340,85 @@ class JSONStateMachine:
             if self.state == prev_state:
                 break
 
-    def constrained_decoding(self, model: Small_LLM_Model,
-                             initial_input_ids: list[int]) -> str:
-        input_ids = list(initial_input_ids)
-        prompt_idx = 0
-        if self.prompts:
-            self.user_query = self.prompts[prompt_idx].prompt
+    def constrained_decoding(
+            self, model: Small_LLM_Model, initial_input_ids) -> str:
+        input_ids = []
+        for x in initial_input_ids:
+            if hasattr(x, "tolist"):
+                flattened = x.tolist()
+                if isinstance(flattened, list):
+                    input_ids.extend([int(val) for val in flattened])
+                else:
+                    input_ids.append(int(flattened))
+            elif hasattr(x, "item"):
+                input_ids.append(int(x.item()))
+            else:
+                input_ids.append(int(x))
 
-        while JSONState.FINISHED:
-            if self.state == JSONState.NEXT and self.buffer == "":
-                prompt_idx += 1
-                if prompt_idx < len(self.prompts):
-                    self.user_query = self.prompts[prompt_idx].prompt
+        self.state = JSONState.START
 
+        while self.state != JSONState.FINISHED:
             allowed_tokens = self._get_allowed_token_ids()
             if not allowed_tokens:
                 raise RuntimeError(
-                    "FSM reached a dead end with no allowed tokens"
+                    "FSM reached a dead end with no allowed "
+                    f"tokens in state {self.state}"
                 )
+
             logits = model.get_logits_from_input_ids(input_ids)
             next_token_id = max(
                 allowed_tokens, key=lambda token_id: logits[token_id]
             )
+
+            next_token_id = int(next_token_id)
+
             token_str = self.decoder.decode_token(next_token_id)
             self._update_state(token_str)
             input_ids.append(next_token_id)
 
-        return self.get_final_output(model, input_ids, initial_input_ids)
+        return self._get_final_output(model, input_ids, initial_input_ids)
 
-    def get_final_output(self, model: Small_LLM_Model, output_ids: list[int],
-                         initial_input_ids: list[int]) -> str:
-        generated_ids = output_ids[len(initial_input_ids):]
-        raw_text = model.decode(generated_ids)
+    def _repair_json(self, text: str):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
 
-        pattern = (
-            r"<\|im_end\|>\s*<\|im_start\|>user.*?<\|im_start\|>assistant\s*"
-        )
-        clean_json_text = re.sub(pattern, "", raw_text, flags=re.DOTALL)
+        t = text.replace('\\"', '"')
+        t = re.sub(r'\\[nrt]', ' ', t)
+        t = t.replace("\\", "")
+        return json.loads(t)
 
-        return clean_json_text.strip()
+    def _format_calls(self, calls: list) -> str:
+        items = []
+        for call in calls:
+            fields = ",\n".join(
+                f"        {json.dumps(key)}: {json.dumps(value)}"
+                for key, value in call.items()
+            )
+            items.append("    {\n" + fields + "\n    }")
+        return "[\n" + ",\n".join(items) + "\n]"
+
+    def _get_final_output(self, model, output_ids, initial_input_ids) -> str:
+        try:
+            generated_ids = output_ids[len(initial_input_ids):]
+            raw_text = model.decode(generated_ids)
+        except Exception:
+            raw_text = model.decode(output_ids)
+
+        for marker in ["<|im_start|>assistant", "assistant\n"]:
+            if marker in raw_text:
+                raw_text = raw_text.split(marker)[-1]
+
+        match = re.search(r"\[.*\]", raw_text, re.DOTALL)
+        json_text = match.group(0) if match else raw_text
+
+        try:
+            parsed = self._repair_json(json_text)
+        except json.JSONDecodeError:
+            return json_text.strip()
+
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+
+        return self._format_calls(parsed)

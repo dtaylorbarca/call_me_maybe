@@ -4,10 +4,24 @@ class DataTypeValidation:
             return False
         import re
 
-        return bool(re.fullmatch(r"-?\d*\.?\d*", s))
+        pattern = r"^-?(?:0|[1-9]\d*)?(?:\.\d{0,2})?$"
+        return bool(re.fullmatch(pattern, s))
 
     def is_valid_number(self, s: str) -> bool:
+        if not s or s in {"-", ".", "-."}:
+            return True
+
         try:
+            if len(s) > 1 and s[0] == "0" and s[1].isdigit():
+                return False
+            if len(s) > 2 and s[0:2] == "-0" and s[2].isdigit():
+                return False
+
+            if "." in s:
+                _, decimal_part = s.split(".", 1)
+                if len(decimal_part) > 2:
+                    return False
+
             float(s)
             return True
         except ValueError:
