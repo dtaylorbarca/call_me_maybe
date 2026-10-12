@@ -26,6 +26,35 @@ AFTER_NAME_PATH = '",\n        "parameters": {'
 END_PATH = '}\n    }\n]'
 
 
+class FSMTokenizerIndex:
+    def __init__(self, vocab: dict[str, int], decoder: TokenDecoder):
+        self.decoder = decoder
+        self.buckets: dict[str, list[int]] = {}
+        self.all_token_ids = []
+        self.safe_string_tokens = []
+
+        for token_str, token_id in vocab.items():
+            text = decoder.decode_token(token_id)
+            if not text:
+                continue
+            self.all_token_ids.append(token_id)
+
+            if '"' not in text and '\\' not in text:
+                self.safe_string_tokens.append(token_id)
+
+            first_char = text[0]
+            if first_char not in self.buckets:
+                self.buckets[first_char] = []
+            self.buckets[first_char].append(token_id)
+
+    def get_tokens_starting_with(self, chars: str) -> list[int]:
+        result = []
+        for c in chars:
+            if c in self.buckets:
+                result.extend(self.buckets[c])
+        return result
+
+
 class JSONStateMachine:
     def __init__(self, tools: list[FunctionTool], prompts: list[UserQuery],
                  vocab_path: str) -> None:
@@ -36,11 +65,13 @@ class JSONStateMachine:
         self.state: JSONState = JSONState.START
         self.selected_tool: FunctionTool | None = None
         self.buffer = ""
-        self.user_query = prompts[0].prompt
+        self.user_query: str = prompts[0].prompt
         self.decoder = TokenDecoder(self.vocab)
         self.used_params: list[str] = []
         self.finished_prompts: list[str] = []
         self.data_type_validator: DataTypeValidation = DataTypeValidation()
+        self.token_index: FSMTokenizerIndex = FSMTokenizerIndex(
+            self.vocab, self.decoder)
 
     def _get_allowed_determ_tokens(self, fixed_path: str) -> set[int]:
         allowed = set()
@@ -50,7 +81,10 @@ class JSONStateMachine:
         if not remaining:
             return allowed
 
-        for token_text, token_id in self.vocab.items():
+        token_ids_to_check = self.token_index.get_tokens_starting_with(
+            remaining[0])
+
+        for token_id in token_ids_to_check:
             token_text = self.decoder.decode_token(token_id)
             if not token_text:
                 continue
@@ -67,15 +101,23 @@ class JSONStateMachine:
         allowed = set()
         current_len = len(self.buffer)
 
-        for token_text, token_id in self.vocab.items():
+        valid_chars = set()
+        targets = []
+        for tool in self.tools:
+            target = tool.name + '"'
+            remaining_target = target[current_len:]
+            if remaining_target:
+                valid_chars.add(remaining_target[0])
+                targets.append(remaining_target)
+        token_ids_to_check = self.token_index.get_tokens_starting_with(
+            "".join(valid_chars))
+
+        for token_id in token_ids_to_check:
             token_text = self.decoder.decode_token(token_id)
             if not token_text:
                 continue
 
-            for tool in self.tools:
-                target = tool.name + '"'
-                remaining_target = target[current_len:]
-
+            for remaining_target in targets:
                 if (remaining_target.startswith(token_text) or
                         token_text.startswith(remaining_target)):
                     allowed.add(token_id)
@@ -88,22 +130,45 @@ class JSONStateMachine:
         if not self.selected_tool or not self.selected_tool.parameters:
             return allowed
 
+        is_all_used = len(self.used_params) == len(
+            self.selected_tool.parameters)
+        if is_all_used:
+            token_ids_to_check = self.token_index.get_tokens_starting_with("}")
+            for token_id in token_ids_to_check:
+                token_text = self.decoder.decode_token(token_id)
+                if token_text.startswith("}"):
+                    allowed.add(token_id)
+
         current_len = len(self.buffer)
+
+        valid_chars = set()
+        targets = []
         for param_name in self.selected_tool.parameters.keys():
             if param_name in self.used_params:
                 continue
 
             target = f'"{param_name}": '
             remaining_target = target[current_len:]
+            if remaining_target:
+                valid_chars.add(remaining_target[0])
+                targets.append(remaining_target)
 
-            for token_text, token_id in self.vocab.items():
-                token_text = self.decoder.decode_token(token_id)
-                if not token_text:
-                    continue
+        if not valid_chars:
+            return allowed
 
+        token_ids_to_check = self.token_index.get_tokens_starting_with(
+            "".join(valid_chars))
+
+        for token_id in token_ids_to_check:
+            token_text = self.decoder.decode_token(token_id)
+            if not token_text:
+                continue
+
+            for remaining_target in targets:
                 if (remaining_target.startswith(token_text) or
                         token_text.startswith(remaining_target)):
                     allowed.add(token_id)
+                    break
 
         return allowed
 
@@ -116,7 +181,25 @@ class JSONStateMachine:
         param_type = param_info.get("type")
         is_last = len(self.used_params) == len(self.selected_tool.parameters)
 
-        for token_id in self.vocab.values():
+        if param_type == "number":
+            candidate_chars = "-.0123456789"
+            token_ids_to_check = self.token_index.get_tokens_starting_with(
+                candidate_chars)
+
+            if self.data_type_validator.is_valid_number(self.buffer):
+                token_ids_to_check += self.token_index.get_tokens_starting_with(
+                    ",}\n ")
+
+        elif param_type == "string":
+            if self.buffer.endswith('"'):
+                token_ids_to_check = self.token_index.safe_string_tokens
+            else:
+                token_ids_to_check = self.token_index.get_tokens_starting_with(",}\n ")
+
+        else:
+            token_ids_to_check = self.token_index.all_token_ids
+
+        for token_id in token_ids_to_check:
             token_text = self.decoder.decode_token(token_id)
             if not token_text:
                 continue
@@ -208,9 +291,6 @@ class JSONStateMachine:
             case JSONState.IN_PARAM_VALUE:
                 return self._get_allowed_value_tokens()
 
-            case JSONState.NEXT:
-                return self._get_allowed_determ_tokens(self.next_path)
-
             case JSONState.END:
                 return self._get_allowed_determ_tokens(END_PATH)
 
@@ -229,19 +309,11 @@ class JSONStateMachine:
             prev_state = self.state
             match self.state:
                 case JSONState.START:
-                    if len(self.buffer) >= len(
-                            START_PATH + self.user_query + AFTER_PROMPT_PATH):
-                        self.buffer = self.buffer[
-                            len(START_PATH + self.user_query +
-                                AFTER_PROMPT_PATH):]
-                        self.state = JSONState.IN_NAME
-                        self.temp_tools = self.tools
-
-                case JSONState.PROMPT:
-                    if len(self.buffer) >= len(
-                            self.user_query + AFTER_PROMPT_PATH):
-                        self.buffer = self.buffer[len(
-                            self.user_query + AFTER_PROMPT_PATH):]
+                    target_path = (
+                        START_PATH + self.user_query + AFTER_PROMPT_PATH
+                    )
+                    if len(self.buffer) >= len(target_path):
+                        self.buffer = self.buffer[len(target_path):]
                         self.state = JSONState.IN_NAME
 
                 case JSONState.IN_NAME:
@@ -261,9 +333,7 @@ class JSONStateMachine:
                             self.state = JSONState.AFTER_NAME
                         else:
                             raise ValueError(
-                                "Generated unknown tool name:"
-                                f"'{extracted_name}'"
-                            )
+                                f"Generated unknown tool name: '{extracted_name}'")
 
                 case JSONState.AFTER_NAME:
                     if len(self.buffer) >= len(AFTER_NAME_PATH):
@@ -271,24 +341,25 @@ class JSONStateMachine:
                         self.state = JSONState.IN_PARAMS
 
                 case JSONState.IN_PARAMS:
-                    if (self.selected_tool and not
-                            self.selected_tool.parameters):
-                        self.finished_prompts.append(self.user_query)
-                        if len(self.finished_prompts) < len(self.prompts):
-                            self.state = JSONState.NEXT
-                        else:
-                            self.state = JSONState.END
+                    if self.selected_tool and not self.selected_tool.parameters:
+                        self.state = JSONState.END
                     elif self.selected_tool and self.selected_tool.parameters:
-                        for param_name in self.selected_tool.parameters.keys():
-                            if param_name not in self.used_params:
-                                expected_prefix = f'"{param_name}": '
-                                if self.buffer.startswith(expected_prefix):
-                                    self.current_param = param_name
-                                    self.used_params.append(param_name)
-                                    self.buffer = self.buffer[
-                                        len(expected_prefix):]
-                                    self.state = JSONState.IN_PARAM_VALUE
-                                    break
+                        if len(self.used_params) == len(self.selected_tool.parameters):
+                            if "}" in self.buffer:
+                                delim_indx = self.buffer.index("}")
+                                self.buffer = self.buffer[delim_indx + 1:]
+                                self.state = JSONState.END
+                        else:
+                            for param_name in self.selected_tool.parameters.keys():
+                                if param_name not in self.used_params:
+                                    expected_prefix = f'"{param_name}": '
+                                    if self.buffer.startswith(expected_prefix):
+                                        self.current_param = param_name
+                                        self.used_params.append(param_name)
+                                        self.buffer = self.buffer[len(
+                                            expected_prefix):]
+                                        self.state = JSONState.IN_PARAM_VALUE
+                                        break
 
                 case JSONState.IN_PARAM_VALUE:
                     if not self.selected_tool or not self.current_param:
@@ -306,29 +377,7 @@ class JSONStateMachine:
                             self.buffer = self.buffer[delim_indx + 1:]
 
                         self.current_param = None
-
-                        if (len(self.used_params) <
-                                len(self.selected_tool.parameters)):
-                            self.state = JSONState.IN_PARAMS
-                        else:
-                            self.finished_prompts.append(self.user_query)
-                            if len(self.finished_prompts) < len(self.prompts):
-                                next_prompt = self.prompts[
-                                    len(self.finished_prompts)
-                                ].prompt
-                                self.next_path = self._build_next_path(
-                                    next_prompt)
-                                self.user_query = next_prompt
-                                self.state = JSONState.NEXT
-                            else:
-                                self.state = JSONState.END
-
-                case JSONState.NEXT:
-                    if len(self.buffer) >= len(self.next_path):
-                        self.buffer = self.buffer[len(self.next_path):]
-                        self.used_params = []
-                        self.selected_tool = None
-                        self.state = JSONState.PROMPT
+                        self.state = JSONState.IN_PARAMS
 
                 case JSONState.END:
                     if len(self.buffer) >= len(END_PATH):
@@ -340,8 +389,7 @@ class JSONStateMachine:
             if self.state == prev_state:
                 break
 
-    def constrained_decoding(
-            self, model: Small_LLM_Model, initial_input_ids) -> str:
+    def constrained_decoding(self, model: Small_LLM_Model, initial_input_ids) -> str:
         input_ids = []
         for x in initial_input_ids:
             if hasattr(x, "tolist"):
@@ -361,16 +409,11 @@ class JSONStateMachine:
             allowed_tokens = self._get_allowed_token_ids()
             if not allowed_tokens:
                 raise RuntimeError(
-                    "FSM reached a dead end with no allowed "
-                    f"tokens in state {self.state}"
-                )
+                    f"FSM reached dead end in state {self.state}")
 
             logits = model.get_logits_from_input_ids(input_ids)
-            next_token_id = max(
-                allowed_tokens, key=lambda token_id: logits[token_id]
-            )
-
-            next_token_id = int(next_token_id)
+            next_token_id = int(
+                max(allowed_tokens, key=lambda tid: logits[tid]))
 
             token_str = self.decoder.decode_token(next_token_id)
             self._update_state(token_str)

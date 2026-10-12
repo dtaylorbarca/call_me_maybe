@@ -7,6 +7,7 @@ from .parser import (
 from llm_sdk import Small_LLM_Model
 from .arg_parser import parse_args
 from .fsm import JSONStateMachine
+import time
 
 
 def format_qwen_system_prompt(tools: list[FunctionTool],
@@ -51,16 +52,27 @@ def main() -> None:
 
     tools = load_functions_definition(args.functions_definition)
     prompts = load_user_queries(args.input)
+    vocab_path = model.get_path_to_vocab_file()
+    start_time = time.time()
+    all_outputs = []
 
-    fsm = JSONStateMachine(tools, prompts, model.get_path_to_vocab_file())
-
-    initial_text = format_qwen_system_prompt(tools, prompts[0])
-    initial_input_ids = model.encode(initial_text)
-    final_output = fsm.constrained_decoding(
-        model, initial_input_ids)
+    for idx, prompt_obj in enumerate(prompts):
+        prompt_start = time.time()
+        fsm = JSONStateMachine(tools, prompts, vocab_path)
+        fsm.user_query = prompt_obj.prompt
+        fsm.prompts = prompts
+        initial_text = format_qwen_system_prompt(tools, prompt_obj)
+        initial_input_ids = model.encode(initial_text)
+        final_output = fsm.constrained_decoding(model, initial_input_ids)
+        all_outputs.append(final_output)
+        elapsed = time.time() - prompt_start
+        print(
+            f"Finished prompt {idx+1} ('{prompt_obj.prompt}') in {elapsed:.2f} seconds")
 
     with open(args.output, "w") as f:
-        f.write(final_output)
+        f.write(all_outputs[-1] if all_outputs else "")
+
+    print(f"All prompts finished in {time.time() - start_time:.2f} seconds")
 
 
 if __name__ == "__main__":
