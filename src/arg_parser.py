@@ -40,10 +40,7 @@ def valid_json_output_file(path_str: str) -> Path:
             f"File '{path_str}' must have a .json extension"
         )
 
-    if not path.parent.exists():
-        raise argparse.ArgumentTypeError(
-            f"Output directory '{path.parent}' does not exist"
-        )
+    path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
 

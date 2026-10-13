@@ -6,8 +6,11 @@ from .parser import (
 )
 from llm_sdk import Small_LLM_Model
 from .arg_parser import parse_args
-from .fsm import JSONStateMachine
+from .fsm import JSONStateMachine, FSMTokenizerIndex
+from .decoder import TokenDecoder
 import time
+import json
+from pathlib import Path
 
 
 def format_qwen_system_prompt(tools: list[FunctionTool],
@@ -55,10 +58,14 @@ def main() -> None:
     vocab_path = model.get_path_to_vocab_file()
     start_time = time.time()
     all_outputs = []
+    with open(Path(vocab_path), encoding="utf-8") as f:
+        vocab: dict[str, int] = json.load(f)
+    decoder = TokenDecoder(vocab)
+    tokenizer_index = FSMTokenizerIndex(vocab, decoder)
 
     for idx, prompt_obj in enumerate(prompts):
         prompt_start = time.time()
-        fsm = JSONStateMachine(tools, prompts, vocab_path)
+        fsm = JSONStateMachine(tools, prompts, vocab, tokenizer_index, decoder)
         fsm.user_query = prompt_obj.prompt
         fsm.prompts = prompts
         initial_text = format_qwen_system_prompt(tools, prompt_obj)
@@ -69,8 +76,9 @@ def main() -> None:
         print(
             f"Finished prompt {idx+1} ('{prompt_obj.prompt}') in {elapsed:.2f} seconds")
 
-    with open(args.output, "w") as f:
-        f.write(all_outputs[-1] if all_outputs else "")
+    output = "".join(all_outputs)
+    with open(args.output, "w", encoding="utf-8") as f:
+        f.write(output)
 
     print(f"All prompts finished in {time.time() - start_time:.2f} seconds")
 

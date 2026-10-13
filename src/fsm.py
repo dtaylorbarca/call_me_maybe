@@ -3,7 +3,6 @@ from .parser import FunctionTool, UserQuery
 from .decoder import TokenDecoder
 from llm_sdk import Small_LLM_Model
 from enum import Enum, auto
-from pathlib import Path
 import re
 import json
 
@@ -57,21 +56,20 @@ class FSMTokenizerIndex:
 
 class JSONStateMachine:
     def __init__(self, tools: list[FunctionTool], prompts: list[UserQuery],
-                 vocab_path: str) -> None:
-        with open(Path(vocab_path), encoding="utf-8") as f:
-            self.vocab: dict[str, int] = json.load(f)
+                 vocab: dict[str, int], tokenizer_index: FSMTokenizerIndex,
+                 decoder: TokenDecoder) -> None:
+        self.vocab = vocab
         self.tools: list[FunctionTool] = tools
         self.prompts: list[UserQuery] = prompts
         self.state: JSONState = JSONState.START
         self.selected_tool: FunctionTool | None = None
         self.buffer = ""
         self.user_query: str = prompts[0].prompt
-        self.decoder = TokenDecoder(self.vocab)
+        self.decoder = decoder
         self.used_params: list[str] = []
         self.finished_prompts: list[str] = []
         self.data_type_validator: DataTypeValidation = DataTypeValidation()
-        self.token_index: FSMTokenizerIndex = FSMTokenizerIndex(
-            self.vocab, self.decoder)
+        self.token_index: FSMTokenizerIndex = tokenizer_index
 
     def _get_allowed_determ_tokens(self, fixed_path: str) -> set[int]:
         allowed = set()
@@ -105,6 +103,8 @@ class JSONStateMachine:
         targets = []
         for tool in self.tools:
             target = tool.name + '"'
+            if not target.startswith(self.buffer):
+                continue
             remaining_target = target[current_len:]
             if remaining_target:
                 valid_chars.add(remaining_target[0])
@@ -148,6 +148,8 @@ class JSONStateMachine:
                 continue
 
             target = f'"{param_name}": '
+            if not target.startswith(self.buffer):
+                continue
             remaining_target = target[current_len:]
             if remaining_target:
                 valid_chars.add(remaining_target[0])
@@ -194,21 +196,34 @@ class JSONStateMachine:
             if self.buffer.endswith('"'):
                 token_ids_to_check = self.token_index.safe_string_tokens
             else:
-                token_ids_to_check = self.token_index.get_tokens_starting_with(",}\n ")
+                token_ids_to_check = (
+                    self.token_index.safe_string_tokens +
+                    self.token_index.get_tokens_starting_with('"\\')
+                )
 
         else:
             token_ids_to_check = self.token_index.all_token_ids
 
+        decoder_texts = self.decoder.texts
+        is_valid_string = self.data_type_validator.is_valid_json_string
+        is_valid_number_prefix = (
+            self.data_type_validator.is_valid_number_prefix)
+        is_valid_number = self.data_type_validator.is_valid_number
+        is_prefix_func = getattr(
+            self.data_type_validator,
+            "is_valid_json_string_prefix",
+            lambda x: True
+        )
+
         for token_id in token_ids_to_check:
-            token_text = self.decoder.decode_token(token_id)
+            token_text = decoder_texts[token_id]
             if not token_text:
                 continue
 
             candidate = self.buffer + token_text
 
             if param_type == "string":
-                if (self.data_type_validator.is_valid_json_string(self.buffer)
-                        and self.buffer.endswith('"')):
+                if is_valid_string(self.buffer) and self.buffer.endswith('"'):
                     if (is_last and (token_text.startswith("}") or
                                      token_text.strip() == "")):
                         allowed.add(token_id)
@@ -217,20 +232,13 @@ class JSONStateMachine:
                                            token_text.startswith("\n"))):
                         allowed.add(token_id)
                 else:
-                    is_prefix_func = getattr(
-                        self.data_type_validator,
-                        "is_valid_json_string_prefix",
-                        lambda x: True
-                    )
-                    if (self.data_type_validator.is_valid_json_string(
-                        candidate) or
-                            is_prefix_func(candidate)):
+                    if is_valid_string(candidate) or is_prefix_func(candidate):
                         allowed.add(token_id)
 
             elif param_type == "number":
-                if self.data_type_validator.is_valid_number_prefix(candidate):
+                if is_valid_number_prefix(candidate):
                     allowed.add(token_id)
-                elif self.data_type_validator.is_valid_number(self.buffer):
+                elif is_valid_number(self.buffer):
                     if (is_last and (token_text.startswith("}") or
                                      token_text.strip() == "")):
                         allowed.add(token_id)
