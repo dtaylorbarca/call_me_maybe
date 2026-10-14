@@ -9,20 +9,17 @@ import json
 
 class JSONState(Enum):
     START = auto()
-    PROMPT = auto()
+    NEXT = auto()
     IN_NAME = auto()
     AFTER_NAME = auto()
     IN_PARAMS = auto()
     IN_PARAM_VALUE = auto()
-    NEXT = auto()
     END = auto()
     FINISHED = auto()
 
 
-START_PATH = '[\n    {\n        "prompt": "'
 AFTER_PROMPT_PATH = '",\n        "name": "'
-AFTER_NAME_PATH = '",\n        "parameters": {'
-END_PATH = '}\n    }\n]'
+AFTER_NAME_PATH = '        "parameters": {'
 
 
 class FSMTokenizerIndex:
@@ -32,13 +29,13 @@ class FSMTokenizerIndex:
         self.all_token_ids = []
         self.safe_string_tokens = []
 
-        for token_str, token_id in vocab.items():
-            text = decoder.decode_token(token_id)
+        decoder_texts = decoder.texts
+        for token_id, text in enumerate(decoder_texts):
             if not text:
                 continue
             self.all_token_ids.append(token_id)
 
-            if '"' not in text and '\\' not in text:
+            if '\n' not in text and '\r' not in text:
                 self.safe_string_tokens.append(token_id)
 
             first_char = text[0]
@@ -57,7 +54,7 @@ class FSMTokenizerIndex:
 class JSONStateMachine:
     def __init__(self, tools: list[FunctionTool], prompts: list[UserQuery],
                  vocab: dict[str, int], tokenizer_index: FSMTokenizerIndex,
-                 decoder: TokenDecoder) -> None:
+                 decoder: TokenDecoder, is_first: bool, is_last: bool) -> None:
         self.vocab = vocab
         self.tools: list[FunctionTool] = tools
         self.prompts: list[UserQuery] = prompts
@@ -71,29 +68,17 @@ class JSONStateMachine:
         self.data_type_validator: DataTypeValidation = DataTypeValidation()
         self.token_index: FSMTokenizerIndex = tokenizer_index
 
-    def _get_allowed_determ_tokens(self, fixed_path: str) -> set[int]:
-        allowed = set()
-        current_len = len(self.buffer)
-        remaining = fixed_path[current_len:]
+        if is_first:
+            self.start_path = '[\n    {\n        "prompt": "'
+        else:
+            self.start_path = ',\n    {\n        "prompt": "'
 
-        if not remaining:
-            return allowed
+        if is_last:
+            self.end_path = '\n    }\n]'
+        else:
+            self.end_path = '\n    }'
 
-        token_ids_to_check = self.token_index.get_tokens_starting_with(
-            remaining[0])
 
-        for token_id in token_ids_to_check:
-            token_text = self.decoder.decode_token(token_id)
-            if not token_text:
-                continue
-
-            current_text = self.buffer + token_text
-            if remaining.startswith(token_text) or (
-                    token_text.startswith(remaining) and
-                    fixed_path.startswith(current_text)):
-                allowed.add(token_id)
-
-        return allowed
 
     def _get_allowed_name_tokens(self) -> set[int]:
         allowed = set()
@@ -132,12 +117,6 @@ class JSONStateMachine:
 
         is_all_used = len(self.used_params) == len(
             self.selected_tool.parameters)
-        if is_all_used:
-            token_ids_to_check = self.token_index.get_tokens_starting_with("}")
-            for token_id in token_ids_to_check:
-                token_text = self.decoder.decode_token(token_id)
-                if token_text.startswith("}"):
-                    allowed.add(token_id)
 
         current_len = len(self.buffer)
 
@@ -183,23 +162,20 @@ class JSONStateMachine:
         param_type = param_info.get("type")
         is_last = len(self.used_params) == len(self.selected_tool.parameters)
 
+        get_tokens = self.token_index.get_tokens_starting_with
         if param_type == "number":
             candidate_chars = "-.0123456789"
             token_ids_to_check = self.token_index.get_tokens_starting_with(
                 candidate_chars)
 
             if self.data_type_validator.is_valid_number(self.buffer):
-                token_ids_to_check += self.token_index.get_tokens_starting_with(
-                    ",}\n ")
+                token_ids_to_check += get_tokens(",}\n ")
 
         elif param_type == "string":
             if self.buffer.endswith('"'):
                 token_ids_to_check = self.token_index.safe_string_tokens
             else:
-                token_ids_to_check = (
-                    self.token_index.safe_string_tokens +
-                    self.token_index.get_tokens_starting_with('"\\')
-                )
+                token_ids_to_check = self.token_index.safe_string_tokens
 
         else:
             token_ids_to_check = self.token_index.all_token_ids
@@ -277,30 +253,14 @@ class JSONStateMachine:
 
     def _get_allowed_token_ids(self) -> set[int]:
         match self.state:
-            case JSONState.START:
-                return self._get_allowed_determ_tokens(
-                    START_PATH + self.user_query + AFTER_PROMPT_PATH
-                )
-
-            case JSONState.PROMPT:
-                return self._get_allowed_determ_tokens(
-                    self.user_query + AFTER_PROMPT_PATH
-                )
-
             case JSONState.IN_NAME:
                 return self._get_allowed_name_tokens()
-
-            case JSONState.AFTER_NAME:
-                return self._get_allowed_determ_tokens(AFTER_NAME_PATH)
 
             case JSONState.IN_PARAMS:
                 return self._get_allowed_param_tokens()
 
             case JSONState.IN_PARAM_VALUE:
                 return self._get_allowed_value_tokens()
-
-            case JSONState.END:
-                return self._get_allowed_determ_tokens(END_PATH)
 
             case _:
                 return set()
@@ -316,14 +276,6 @@ class JSONStateMachine:
         while True:
             prev_state = self.state
             match self.state:
-                case JSONState.START:
-                    target_path = (
-                        START_PATH + self.user_query + AFTER_PROMPT_PATH
-                    )
-                    if len(self.buffer) >= len(target_path):
-                        self.buffer = self.buffer[len(target_path):]
-                        self.state = JSONState.IN_NAME
-
                 case JSONState.IN_NAME:
                     if '"' in self.buffer:
                         quote_index = self.buffer.index('"')
@@ -341,24 +293,23 @@ class JSONStateMachine:
                             self.state = JSONState.AFTER_NAME
                         else:
                             raise ValueError(
-                                f"Generated unknown tool name: '{extracted_name}'")
-
-                case JSONState.AFTER_NAME:
-                    if len(self.buffer) >= len(AFTER_NAME_PATH):
-                        self.buffer = self.buffer[len(AFTER_NAME_PATH):]
-                        self.state = JSONState.IN_PARAMS
+                                "Generated unknown tool name: "
+                                f"'{extracted_name}'")
 
                 case JSONState.IN_PARAMS:
-                    if self.selected_tool and not self.selected_tool.parameters:
+                    if (self.selected_tool and not
+                            self.selected_tool.parameters):
                         self.state = JSONState.END
                     elif self.selected_tool and self.selected_tool.parameters:
-                        if len(self.used_params) == len(self.selected_tool.parameters):
+                        if len(self.used_params) == len(
+                                self.selected_tool.parameters):
                             if "}" in self.buffer:
                                 delim_indx = self.buffer.index("}")
                                 self.buffer = self.buffer[delim_indx + 1:]
                                 self.state = JSONState.END
                         else:
-                            for param_name in self.selected_tool.parameters.keys():
+                            for param_name in (
+                                    self.selected_tool.parameters.keys()):
                                 if param_name not in self.used_params:
                                     expected_prefix = f'"{param_name}": '
                                     if self.buffer.startswith(expected_prefix):
@@ -372,6 +323,12 @@ class JSONStateMachine:
                 case JSONState.IN_PARAM_VALUE:
                     if not self.selected_tool or not self.current_param:
                         break
+
+                    param_info = self.selected_tool.parameters.get(
+                        self.current_param, {})
+                    if param_info.get("type") == "number":
+                        if self.buffer.endswith('"'):
+                            self.buffer = self.buffer.rstrip('"')
 
                     has_comma = "," in self.buffer
                     has_bracket = "}" in self.buffer
@@ -387,47 +344,68 @@ class JSONStateMachine:
                         self.current_param = None
                         self.state = JSONState.IN_PARAMS
 
-                case JSONState.END:
-                    if len(self.buffer) >= len(END_PATH):
-                        self.state = JSONState.FINISHED
-
                 case JSONState.FINISHED:
                     break
 
             if self.state == prev_state:
                 break
 
-    def constrained_decoding(self, model: Small_LLM_Model, initial_input_ids) -> str:
-        input_ids = []
-        for x in initial_input_ids:
-            if hasattr(x, "tolist"):
-                flattened = x.tolist()
-                if isinstance(flattened, list):
-                    input_ids.extend([int(val) for val in flattened])
-                else:
-                    input_ids.append(int(flattened))
-            elif hasattr(x, "item"):
-                input_ids.append(int(x.item()))
-            else:
-                input_ids.append(int(x))
+    @staticmethod
+    def _flatten_ids(encoded) -> list[int]:
+        data = encoded.tolist() if hasattr(encoded, "tolist") else encoded
+        if data and isinstance(data[0], list):      # shape (1, n)
+            data = data[0]
+        return [int(v) for v in data]
 
-        self.state = JSONState.START
+    def _forced_text(self) -> str | None:
+        """
+        Return text with exactly one valid continuation and advanced state.
+        """
+        match self.state:
+            case JSONState.START:
+                text = self.start_path + self.user_query + AFTER_PROMPT_PATH
+                self.state = JSONState.IN_NAME
+            case JSONState.NEXT:
+                text = self.start_path + self.user_query + AFTER_PROMPT_PATH
+                self.state = JSONState.IN_NAME
+            case JSONState.AFTER_NAME:
+                text = AFTER_NAME_PATH
+                self.state = JSONState.IN_PARAMS
+            case JSONState.END:
+                has_params = bool(self.selected_tool
+                                  and self.selected_tool.parameters)
+                text = self.end_path if has_params else "}" + self.end_path
+                self.state = JSONState.FINISHED
+            case _:
+                return None
+        self.buffer = ""
+        return text
+
+    def constrained_decoding(self, model: Small_LLM_Model,
+                             initial_input_ids) -> str:
+        input_ids = self._flatten_ids(initial_input_ids)
+        prompt_len = len(input_ids)
 
         while self.state != JSONState.FINISHED:
-            allowed_tokens = self._get_allowed_token_ids()
-            if not allowed_tokens:
+            forced = self._forced_text()
+            if forced is not None:
+                input_ids.extend(self._flatten_ids(model.encode(forced)))
+                continue
+
+            allowed = self._get_allowed_token_ids()
+            if not allowed:
                 raise RuntimeError(
-                    f"FSM reached dead end in state {self.state}")
+                    f"FSM reached dead end in state {self.state}"
+                )
 
             logits = model.get_logits_from_input_ids(input_ids)
-            next_token_id = int(
-                max(allowed_tokens, key=lambda tid: logits[tid]))
+            next_id = int(max(allowed, key=lambda tid: logits[tid]))
+            self._update_state(self.decoder.decode_token(next_id))
+            input_ids.append(next_id)
 
-            token_str = self.decoder.decode_token(next_token_id)
-            self._update_state(token_str)
-            input_ids.append(next_token_id)
-
-        return self._get_final_output(model, input_ids, initial_input_ids)
+        generated_text = "".join(
+            self.decoder.decode_token(i) for i in input_ids[prompt_len:])
+        return self._get_final_output(model, generated_text, initial_input_ids)
 
     def _repair_json(self, text: str):
         try:
@@ -453,9 +431,19 @@ class JSONStateMachine:
     def _get_final_output(self, model, output_ids, initial_input_ids) -> str:
         try:
             generated_ids = output_ids[len(initial_input_ids):]
-            raw_text = model.decode(generated_ids)
+            if not generated_ids:
+                generated_ids = output_ids
+
+            clean_ids = [int(x.item() if hasattr(x, "item") else x)
+                         for x in generated_ids]
+            raw_text = model.decode(clean_ids)
         except Exception:
-            raw_text = model.decode(output_ids)
+            try:
+                clean_all = [int(x.item() if hasattr(x, "item") else x)
+                             for x in output_ids]
+                raw_text = model.decode(clean_all)
+            except Exception:
+                return str(output_ids)
 
         for marker in ["<|im_start|>assistant", "assistant\n"]:
             if marker in raw_text:

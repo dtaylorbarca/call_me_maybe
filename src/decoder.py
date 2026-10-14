@@ -24,8 +24,10 @@ class TokenDecoder:
         try:
             data = bytes(self.byte_decoder[c] for c in raw_token)
         except KeyError:
-            return raw_token          # special tokens like <|im_end|>
+            return raw_token
         return data.decode("utf-8", errors="replace")
 
     def decode_token(self, token_id: int) -> str:
-        return self.texts[token_id]
+        if 0 <= token_id < len(self.texts):
+            return self.texts[token_id]
+        return ""
