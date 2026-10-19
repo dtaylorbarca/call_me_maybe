@@ -281,11 +281,12 @@ class JSONStateMachine:
 
     def _value_is_complete(self, text: str, param_type: str) -> bool:
         if param_type == "string":
-            return self.data_type_validator.json_string_status(
-                text) == "closed"
+            return bool(
+                self.data_type_validator.json_string_status(text) == "closed"
+            )
         if param_type in ("number", "integer"):
-            return self.data_type_validator.is_valid_number(text)
-        return text in ("true", "false")
+            return bool(self.data_type_validator.is_valid_number(text))
+        return bool(text in ("true", "false"))
 
     def _update_state(self, token_str: str) -> None:
         self.buffer += token_str
@@ -416,8 +417,8 @@ class JSONStateMachine:
         input_ids = self._flatten_ids(initial_input_ids)
         prompt_len = len(input_ids)
         steps = 0
-        best = ()
-        next_id = 0
+        best: tuple[int, str] | None = None
+        next_id: int | None = 0
 
         while self.state != JSONState.FINISHED:
             forced = self._forced_text()
