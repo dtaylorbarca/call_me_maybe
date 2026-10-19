@@ -4,7 +4,7 @@ from .parser import (
     FunctionTool,
     UserQuery,
 )
-from llm_sdk import Small_LLM_Model
+from llm_sdk import Small_LLM_Model  # type: ignore[attr-defined]
 from .arg_parser import parse_args
 from .fsm import JSONStateMachine, FSMTokenizerIndex
 from .decoder import TokenDecoder
@@ -15,6 +15,24 @@ from pathlib import Path
 
 def format_qwen_system_prompt(tools: list[FunctionTool],
                               user_query: UserQuery) -> str:
+    """Format the system and user prompt for the Qwen model.
+
+    Constructs a structured prompt containing tool definitions, formatting
+    rules, and strict constraints for JSON generation, wrapped in Qwen
+    chat template tags.
+
+    Parameters
+    ----------
+    tools : list[FunctionTool]
+        A list of available function tools that the model can call.
+    user_query : UserQuery
+        The user query object containing the prompt text to be processed.
+
+    Returns
+    -------
+    str
+        The fully formatted prompt string ready for tokenization and inference.
+    """
     tool_snippets = "\n\n".join(
         [tool.to_system_prompt_snippet() for tool in tools]
     )
@@ -60,11 +78,22 @@ more". Write each part once; never repeat a group
 
 
 def main() -> None:
+    """Execute the main constrained generation pipeline.
+
+    Parses command-line arguments, initializes the language model and
+    vocabulary,loads function definitions and user queries, and runs
+    batch-constrained decoding via the Finite State Machine (FSM) to produce
+    structured, valid JSON array outputs.
+    """
     args = parse_args()
     model = Small_LLM_Model()
 
-    tools = load_functions_definition(args.functions_definition)
-    prompts = load_user_queries(args.input)
+    try:
+        tools = load_functions_definition(args.functions_definition)
+        prompts = load_user_queries(args.input)
+    except ValueError as e:
+        print(f"Input error: {e}")
+        raise SystemExit(1)
     vocab_path = model.get_path_to_vocab_file()
     start_time = time.time()
     all_outputs = []

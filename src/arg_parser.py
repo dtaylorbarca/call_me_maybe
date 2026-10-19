@@ -4,6 +4,24 @@ import json
 
 
 def valid_json_input_file(path_str: str) -> Path:
+    """Validate that an input file exists, is a JSON file, and is non-empty.
+
+    Parameters
+    ----------
+    path_str : str
+        The file path string to validate.
+
+    Returns
+    -------
+    Path
+        The validated file path as a Path object.
+
+    Raises
+    ------
+    argparse.ArgumentTypeError
+        If the file extension is not .json, the file does not exist,
+        is empty, or contains invalid JSON syntax.
+    """
     path = Path(path_str)
 
     if path.suffix.lower() != ".json":
@@ -33,6 +51,23 @@ def valid_json_input_file(path_str: str) -> Path:
 
 
 def valid_json_output_file(path_str: str) -> Path:
+    """Validate an output file path and ensure its parent directories exist.
+
+    Parameters
+    ----------
+    path_str : str
+        The output file path string to validate.
+
+    Returns
+    -------
+    Path
+        The validated output file path as a Path object.
+
+    Raises
+    ------
+    argparse.ArgumentTypeError
+        If the file extension is not .json.
+    """
     path = Path(path_str)
 
     if path.suffix.lower() != ".json":
@@ -45,6 +80,21 @@ def valid_json_output_file(path_str: str) -> Path:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse and validate command-line arguments for the decoding engine.
+
+    Configures the argument parser for function definitions, input prompts,
+    and output paths, and ensures that all provided file paths are unique.
+
+    Returns
+    -------
+    argparse.Namespace
+        An object containing the parsed command-line arguments.
+
+    Raises
+    ------
+    argparse.ArgumentTypeError
+        If any of the input/output file paths overlap or are identical.
+    """
     parser = argparse.ArgumentParser(
         description="Run Call Me Maybe constrained decoding engine"
     )

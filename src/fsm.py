@@ -10,6 +10,7 @@ import re
 
 
 class JSONState(Enum):
+    """States for the JSON generation Finite State Machine (FSM)."""
     START = auto()
     IN_NAME = auto()
     AFTER_NAME = auto()
@@ -27,13 +28,40 @@ ESCAPE_OR_BACKSLASH = re.compile(r'\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})|\\')
 
 
 def double_lone_backslashes(text: str) -> str:
-    """Double every backslash that does not start a valid JSON escape."""
+    """Double every backslash that does not start a valid JSON escape sequence.
+
+    Parameters
+    ----------
+    text : str
+        The string text to process.
+
+    Returns
+    -------
+    str
+        The text with lone backslashes safely escaped.
+    """
     return ESCAPE_OR_BACKSLASH.sub(
         lambda m: m.group(0) if len(m.group(0)) > 1 else "\\\\", text)
 
 
 class FSMTokenizerIndex:
+    """
+    Index vocabulary tokens by their initial characters for fast FSM
+    lookups.
+    """
+
     def __init__(self, vocab: dict[str, int], decoder: TokenDecoder):
+        """
+        Initialize the tokenizer index and categorize tokens by buckets and
+        types.
+
+        Parameters
+        ----------
+        vocab : dict[str, int]
+            Vocabulary mapping tokens to their integer IDs.
+        decoder : TokenDecoder
+            The token decoder instance used to decode token IDs into text.
+        """
         self.decoder = decoder
         self.buckets: dict[str, list[int]] = {}
         self.all_token_ids = []
@@ -57,6 +85,19 @@ class FSMTokenizerIndex:
             self.buckets[first_char].append(token_id)
 
     def get_tokens_starting_with(self, chars: str) -> list[int]:
+        """Retrieve all token IDs that start with any of the specified
+        characters.
+
+        Parameters
+        ----------
+        chars : str
+            A string of characters to check against token starting characters.
+
+        Returns
+        -------
+        list[int]
+            A list of matching token IDs.
+        """
         result = []
         for c in chars:
             if c in self.buckets:
@@ -65,9 +106,35 @@ class FSMTokenizerIndex:
 
 
 class JSONStateMachine:
+    """
+    Finite State Machine to enforce strict JSON schema-compliant text
+    generation.
+    """
+
     def __init__(self, tools: list[FunctionTool], prompts: list[UserQuery],
                  vocab: dict[str, int], tokenizer_index: FSMTokenizerIndex,
                  decoder: TokenDecoder, is_first: bool, is_last: bool) -> None:
+        """
+        Initialize the JSON state machine with tools, prompts, vocabulary, and
+        flags.
+
+        Parameters
+        ----------
+        tools : list[FunctionTool]
+            Available tool definitions.
+        prompts : list[UserQuery]
+            List of user input queries.
+        vocab : dict[str, int]
+            Token vocabulary mapping.
+        tokenizer_index : FSMTokenizerIndex
+            Indexed tokenizer helper.
+        decoder : TokenDecoder
+            Decoder for mapping tokens to text.
+        is_first : bool
+            Whether this prompt is the first in the batch output array.
+        is_last : bool
+            Whether this prompt is the last in the batch output array.
+        """
         self.vocab = vocab
         self.tools: list[FunctionTool] = tools
         self.prompts: list[UserQuery] = prompts
@@ -96,6 +163,7 @@ class JSONStateMachine:
             self.end_path = '\n    }'
 
     def _get_allowed_name_tokens(self) -> set[int]:
+        """Determine allowed token IDs for generating the tool name."""
         allowed = set()
         current_len = len(self.buffer)
 
@@ -125,6 +193,7 @@ class JSONStateMachine:
         return allowed
 
     def _key_target(self, param_name: str) -> str:
+        """Construct the target prefix string for a given parameter name."""
         target = f'"{param_name}": '
         if self.selected_tool:
             if self.selected_tool.parameters[param_name].get(
@@ -133,6 +202,9 @@ class JSONStateMachine:
         return target
 
     def _get_allowed_param_tokens(self) -> set[int]:
+        """
+        Determine allowed token IDs for generating parameter names and keys.
+        """
         allowed: set[int] = set()
         if not self.selected_tool or not self.selected_tool.parameters:
             return allowed
@@ -172,9 +244,16 @@ class JSONStateMachine:
         return allowed
 
     def _value_token_kind(self, token_text: str) -> None | str:
-        """'extend': token becomes part of the value.
-        'stop': the model wants the value to end here.
-        None: token not allowed."""
+        """
+        Classify how a candidate token interacts with the current parameter
+        value.
+
+        Returns
+        -------
+        str | None
+            'extend' if part of the value, 'stop' if it ends the value, or
+            None if disallowed.
+        """
         if not self.selected_tool or not self.current_param:
             return None
         params = self.selected_tool.parameters
@@ -217,7 +296,10 @@ class JSONStateMachine:
         return None
 
     def _stop_token_id(self) -> None | int:
-        """The exact token that ends the current value."""
+        """
+        Retrieve the exact token ID required to terminate the current
+        parameter value.
+        """
         if not self.selected_tool or not self.current_param:
             return None
         params = self.selected_tool.parameters
@@ -231,7 +313,7 @@ class JSONStateMachine:
         return exact["}" if is_last else ","]
 
     def _ranked_ids(self, logits: list[float]) -> Any:
-        """Yield token ids from best to worst logit (sorts lazily)."""
+        """Yield token IDs sorted from best to worst logit score."""
         scores = np.asarray(logits, dtype=np.float32)[:len(self.decoder.texts)]
         k = min(64, len(scores))
         top = np.argpartition(-scores, k - 1)[:k]
@@ -244,7 +326,10 @@ class JSONStateMachine:
                     yield token_id
 
     def _is_looping(self) -> bool:
-        """True if the value ends with the same 8+ characters twice."""
+        """
+        Check if the current value buffer is exhibiting a repetitive
+        generation loop.
+        """
         text = self.buffer
         for size in range(8, len(text) // 2 + 1):
             if text[-size:] == text[-2 * size:-size]:
@@ -252,6 +337,10 @@ class JSONStateMachine:
         return False
 
     def _best_value_token(self, logits: list[float]) -> tuple[int, str] | None:
+        """
+        Find the best valid token ID and action kind for the current value
+        generation step.
+        """
         self._looping = self._is_looping()
         texts = self.decoder.texts
         for token_id in self._ranked_ids(logits):
@@ -263,6 +352,7 @@ class JSONStateMachine:
         return None
 
     def _get_allowed_token_ids(self) -> set[int]:
+        """Retrieve allowed token IDs based on the current FSM state."""
         match self.state:
             case JSONState.IN_NAME:
                 return self._get_allowed_name_tokens()
@@ -274,12 +364,19 @@ class JSONStateMachine:
                 return set()
 
     def _build_next_path(self, next_prompt_text: str) -> str:
+        """
+        Build the transition text between consecutive prompts in the batch.
+        """
         return (
             f'}},\n<|im_end|>\n<|im_start|>user\n{next_prompt_text}<|im_end|>'
             '\n  {\n\t\t"prompt": "'
         )
 
     def _value_is_complete(self, text: str, param_type: str) -> bool:
+        """
+        Verify if a generated value string satisfies its expected data type
+        completeness.
+        """
         if param_type == "string":
             return bool(
                 self.data_type_validator.json_string_status(text) == "closed"
@@ -289,6 +386,7 @@ class JSONStateMachine:
         return bool(text in ("true", "false"))
 
     def _update_state(self, token_str: str) -> None:
+        """Advance the FSM state based on newly decoded token text."""
         self.buffer += token_str
         while True:
             prev_state = self.state
@@ -352,6 +450,10 @@ class JSONStateMachine:
                 break
 
     def _forced_text(self) -> str | None:
+        """
+        Determine fixed structural text that must be forced into the
+        generation stream.
+        """
         match self.state:
             case JSONState.START:
                 escaped_query = json.dumps(
@@ -375,7 +477,10 @@ class JSONStateMachine:
         return text
 
     def _is_value_token_ok(self, token_text: str) -> bool:
-        """Same rules as _get_allowed_value_tokens, for ONE token."""
+        """
+        Validate whether a single token text is acceptable for the current
+        value.
+        """
         if not self.selected_tool or not self.current_param:
             return False
         params = self.selected_tool.parameters
@@ -407,6 +512,10 @@ class JSONStateMachine:
 
     @staticmethod
     def _flatten_ids(encoded: Any) -> list[int]:
+        """
+        Flatten nested tensor or list structures into a clean 1-D list of
+        integer token IDs.
+        """
         data = encoded.tolist() if hasattr(encoded, "tolist") else encoded
         if data and isinstance(data[0], list):
             data = data[0]
@@ -414,6 +523,22 @@ class JSONStateMachine:
 
     def constrained_decoding(self, model: Small_LLM_Model,
                              initial_input_ids: Any) -> str:
+        """
+        Execute the constrained decoding loop to generate valid JSON via the
+        FSM.
+
+        Parameters
+        ----------
+        model : Small_LLM_Model
+            The language model instance used for inference.
+        initial_input_ids : Any
+            The starting token IDs for the generation prompt.
+
+        Returns
+        -------
+        str
+            The final generated and formatted JSON output string.
+        """
         input_ids = self._flatten_ids(initial_input_ids)
         prompt_len = len(input_ids)
         steps = 0
@@ -463,10 +588,14 @@ class JSONStateMachine:
         return self._get_final_output(generated_text)
 
     def _parse_generated_text(self, text: str) -> dict[str, Any]:
-        """Turn the generated chunk into a dict.
+        """
+        Parse and validate the generated text chunk into a Python dictionary.
 
-        Raises:
-            RuntimeError: If the text is not valid JSON.
+        Raises
+        ------
+        RuntimeError
+            If the generated text fails JSON parsing or lacks required
+            structure.
         """
         body = text.strip()
         if body.startswith(("[", ",")):
@@ -485,7 +614,9 @@ class JSONStateMachine:
         return record
 
     def _coerce_parameters(self, record: dict[str, Any]) -> None:
-        """Make numbers floats and integers ints, as the schema declares."""
+        """
+        Coerce generated parameter values to match their declared schema types.
+        """
         if not self.selected_tool:
             return
         params = record["parameters"]
@@ -504,7 +635,10 @@ class JSONStateMachine:
                     f"{params[name]!r}") from exc
 
     def _get_final_output(self, text: str) -> str:
-        """Return this prompt's part of the output array as JSON text."""
+        """
+        Format the final validated prompt record into the batch JSON output
+        array.
+        """
         record = self._parse_generated_text(text)
         self._coerce_parameters(record)
         body = json.dumps(record, indent=4, ensure_ascii=False)
