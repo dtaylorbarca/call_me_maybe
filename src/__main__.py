@@ -4,9 +4,9 @@ from .parser import (
     FunctionTool,
     UserQuery,
 )
-from llm_sdk import Small_LLM_Model
+from llm_sdk import Small_LLM_Model  # type: ignore[attr-defined]
 from .arg_parser import parse_args
-from .fsm import JSONStateMachine, FSMTokenizerIndex, JSONState
+from .fsm import JSONStateMachine, FSMTokenizerIndex
 from .decoder import TokenDecoder
 import time
 import json
@@ -26,7 +26,8 @@ You are a function calling assistant with access to the following tools:
 {tool_snippets}
 
 When a tool call is required, you MUST output ONLY a valid JSON array
-containing the tool call object. Match this exact format (strings have quotes, numbers and booleans do not):
+containing the tool call object. Match this exact format (strings have quotes,
+numbers and booleans do not):
 [
   {{
     "name": "function_name",
@@ -42,7 +43,14 @@ CRITICAL RULES:
 1. Do NOT include any conversational text, explanations, or introductory fluff.
 2. Do NOT wrap the JSON array in Markdown code blocks.
 3. The response must start strictly with "[" and end strictly with "]".
-4. Any special characters that require escaping (such as double quotes `"` or backslashes `\\`) inside string values MUST be properly escaped with a backslash (e.g., `\\"`).
+4. Any special characters that require escaping (such as double quotes `"` or
+backslashes `\\`) inside string values MUST be properly escaped with a
+backslash (e.g., `\\"`).
+5. For regular expression parameters write the simplest pattern that works.
+\\d for matches a digit, \\w a word character, \\s whitespace, + means "one or
+more". Write each part once; never repeat a group
+6. IN JSON, write each backslash twice, e.g. the regex \\d+ is written \\\\d+.
+
 <|im_end|>
 <|im_start|>user
 {user_query_str}<|im_end|>

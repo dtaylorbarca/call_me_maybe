@@ -1,31 +1,14 @@
+import re
+
+
 class DataTypeValidation:
     def is_valid_number_prefix(self, s: str) -> bool:
         if not s:
             return False
-        import re
-
-        pattern = r"^-?(?:0|[1-9]\d*)?(?:\.\d{0,2})?$"
-        return bool(re.fullmatch(pattern, s))
+        return bool(re.fullmatch(r"-?(?:(?:0|[1-9]\d*)(?:\.\d*)?)?", s))
 
     def is_valid_number(self, s: str) -> bool:
-        if not s or s in {"-", ".", "-."}:
-            return True
-
-        try:
-            if len(s) > 1 and s[0] == "0" and s[1].isdigit():
-                return False
-            if len(s) > 2 and s[0:2] == "-0" and s[2].isdigit():
-                return False
-
-            if "." in s:
-                _, decimal_part = s.split(".", 1)
-                if len(decimal_part) > 2:
-                    return False
-
-            float(s)
-            return True
-        except ValueError:
-            return False
+        return bool(re.fullmatch(r"-?(?:0|[1-9]\d*)(?:\.\d+)?", s))
 
     def _not_escaped_escapes(self, s: str) -> bool:
         backslash_count = 0
@@ -34,7 +17,6 @@ class DataTypeValidation:
                 backslash_count += 1
             else:
                 break
-
         return backslash_count % 2 == 1
 
     def _has_raw_control_chars(self, s: str) -> bool:
@@ -62,10 +44,8 @@ class DataTypeValidation:
                     i += 6
                 else:
                     return True
-                i += 6
             else:
                 i += 1
-
         return False
 
     def _has_unescaped_internal_quotes(self, s: str) -> bool:
@@ -83,14 +63,42 @@ class DataTypeValidation:
     def is_valid_json_string(self, s: str) -> bool:
         if self._not_escaped_escapes(s):
             return False
-
         if self._has_raw_control_chars(s):
             return False
-
         if self._has_invalid_escapes(s):
             return False
-
         if self._has_unescaped_internal_quotes(s):
             return False
-
         return True
+
+    def json_string_status(self, s: str) -> str:
+        """
+        'open' (valid so far), 'closed' (ends with closing quote), 'invalid'.
+        """
+        i = 0
+        n = len(s)
+        while i < n:
+            c = s[i]
+            if c == "\\":
+                if i + 1 >= n:
+                    return "open"
+                e = s[i + 1]
+                if e in '"\\/bfnrt':
+                    i += 2
+                elif e == "u":
+                    h = s[i + 2:i + 6]
+                    if any(x not in "0123456789abcdefABCDEF" for x in h):
+                        return "invalid"
+                    if len(h) < 4:
+                        return "open"
+                    else:
+                        i += 6
+                else:
+                    i += 1
+            elif c == '"':
+                return "closed" if i == n - 1 else "invalid"
+            elif ord(c) < 32 or c == "\ufffd":
+                return "invalid"
+            else:
+                i += 1
+        return "open"

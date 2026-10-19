@@ -46,13 +46,13 @@ def valid_json_output_file(path_str: str) -> Path:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run Cal Me Maybe constrained decoding engine"
+        description="Run Call Me Maybe constrained decoding engine"
     )
 
     parser.add_argument(
         "--functions_definition",
         type=valid_json_input_file,
-        default=Path("data/input/function_definitions.json"),
+        default=Path("data/input/functions_definition.json"),
         help="Path to valid JSON functions definition file",
     )
 
