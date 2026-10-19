@@ -4,7 +4,7 @@ from .parser import (
     FunctionTool,
     UserQuery,
 )
-from llm_sdk import Small_LLM_Model  # type: ignore[attr-defined]
+from llm_sdk import Small_LLM_Model
 from .arg_parser import parse_args
 from .fsm import JSONStateMachine, FSMTokenizerIndex
 from .decoder import TokenDecoder
