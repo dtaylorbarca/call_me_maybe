@@ -75,7 +75,6 @@ def valid_json_output_file(path_str: str) -> Path:
             f"File '{path_str}' must have a .json extension"
         )
 
-    path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
 

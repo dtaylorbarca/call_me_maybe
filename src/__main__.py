@@ -121,6 +121,7 @@ def main() -> None:
             " seconds")
 
     output = "".join(all_outputs)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:
         f.write(output)
 
