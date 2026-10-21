@@ -196,7 +196,7 @@ class UserQuery(BaseModel):
         -------
         Self
             The validated UserQuery instance.
-        
+
         Raises
         ------
         ValueError
