@@ -401,7 +401,7 @@ class FunctionTool(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1)
-    description: str = ""
+    description: str = Field(min_length=1)
     parameters: dict[str, dict[str, Any]] = Field(
         default_factory=dict
     )

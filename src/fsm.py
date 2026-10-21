@@ -50,7 +50,7 @@ class FSMTokenizerIndex:
     lookups.
     """
 
-    def __init__(self, vocab: dict[str, int], decoder: TokenDecoder):
+    def __init__(self, decoder: TokenDecoder):
         """
         Initialize the tokenizer index and categorize tokens by buckets and
         types.

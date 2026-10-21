@@ -85,6 +85,7 @@ def main() -> None:
     batch-constrained decoding via the Finite State Machine (FSM) to produce
     structured, valid JSON array outputs.
     """
+    start_time = time.time()
     args = parse_args()
     model = Small_LLM_Model()
 
@@ -95,12 +96,11 @@ def main() -> None:
         print(f"Input error: {e}")
         raise SystemExit(1)
     vocab_path = model.get_path_to_vocab_file()
-    start_time = time.time()
     all_outputs = []
     with open(Path(vocab_path), encoding="utf-8") as f:
         vocab: dict[str, int] = json.load(f)
     decoder = TokenDecoder(vocab)
-    tokenizer_index = FSMTokenizerIndex(vocab, decoder)
+    tokenizer_index = FSMTokenizerIndex(decoder)
     total_prompts = len(prompts)
 
     for idx, prompt_obj in enumerate(prompts):
