@@ -145,7 +145,8 @@ class FunctionTool(BaseModel):
             checks.
         """
         check_name("Function", self.name)
-        check_name("Function Description", self.description)
+        if not self.description.strip():
+            raise ValueError("Description cannot be blank")
 
         for param_name, param_schema in self.parameters.items():
             check_name("Parameter", param_name)
