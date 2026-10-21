@@ -9,14 +9,14 @@ check-uv:
 		echo "\033[1;32muv installed successfully.\033[0m"; \
 	fi
 
+all: install run
+
 install: check-uv
 	@$(UV) sync
 
-RUN_ARGS := $(filter-out run --,$(MAKECMDGOALS))
-
 run:
 	@$(MAKE) install --no-print-directory
-	@uv run python -m src $(RUN_ARGS)
+	@uv run python -m src $(ARGS)
 	@$(MAKE) clean --no-print-directory
 
 debug:

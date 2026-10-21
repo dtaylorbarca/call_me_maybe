@@ -9,40 +9,7 @@ from pydantic import (
     model_validator,
 )
 
-JSON_TYPES = {
-    "string",
-    "number",
-    "integer",
-    "boolean",
-    "object",
-    "array",
-    "null",
-}
-
-SCHEMA_KEYWORDS = {
-    "type",
-    "description",
-    "enum",
-    "const",
-    "default",
-    "properties",
-    "required",
-    "items",
-    "additionalProperties",
-    "minimum",
-    "maximum",
-    "exclusiveMinimum",
-    "exclusiveMaximum",
-    "multipleOf",
-    "minLength",
-    "maxLength",
-    "pattern",
-    "minItems",
-    "maxItems",
-    "uniqueItems",
-    "minProperties",
-    "maxProperties",
-}
+SUPPORTED_TYPES = {"string", "number", "integer", "boolean"}
 
 
 class InputFileError(ValueError):
@@ -114,31 +81,22 @@ def _load_json_content(path_str: str) -> Any:
         UnicodeDecodeError,
         json.JSONDecodeError,
         DuplicateJSONKeyError,
+        RecursionError,
     ) as exc:
         raise InputFileError(
             f"Unable to read JSON content from '{path_str}': {exc}"
         ) from exc
 
 
-def _check_json_strings(value: Any, location: str) -> None:
-    """Validate strings recursively using DataTypeValidation.
-
-    Parameters
-    ----------
-    value : Any
-        The value or structure to check.
-    location : str
-        The current schema location path for error reporting.
-    """
-
-    if isinstance(value, dict):
-        for key, item in value.items():
-            _check_json_strings(key, f"{location}.key")
-            _check_json_strings(item, f"{location}.{key}")
-
-    elif isinstance(value, list):
-        for index, item in enumerate(value):
-            _check_json_strings(item, f"{location}[{index}]")
+def _check_name(kind: str, name: str) -> None:
+    """Reject names that would break the decoder's name matching."""
+    if not name.strip():
+        raise ValueError(f"{kind} name cannot be blank")
+    if any(c in '"\\' or ord(c) < 32 for c in name):
+        raise ValueError(
+            f"{kind} name {name!r} contains a quote, a backslash "
+            "or a control character"
+        )
 
 
 def _validate_schema(
@@ -170,13 +128,6 @@ def _validate_schema(
             f"{location} must be a JSON object"
         )
 
-    unknown = set(schema) - SCHEMA_KEYWORDS
-    if unknown:
-        raise ValueError(
-            f"Unsupported schema keyword(s) at {location}: "
-            f"{', '.join(sorted(unknown))}"
-        )
-
     if require_type and "type" not in schema:
         raise ValueError(
             f"{location} must specify a 'type'"
@@ -184,10 +135,10 @@ def _validate_schema(
 
     schema_type = schema.get("type")
 
-    if schema_type is not None and schema_type not in JSON_TYPES:
+    if schema_type is not None and schema_type not in SUPPORTED_TYPES:
         raise ValueError(
             f"Unsupported type {schema_type!r} at {location}. "
-            f"Supported types: {', '.join(sorted(JSON_TYPES))}"
+            f"Supported types: {', '.join(sorted(SUPPORTED_TYPES))}"
         )
 
     if (
@@ -450,11 +401,11 @@ class FunctionTool(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1)
-    description: str
+    description: str = ""
     parameters: dict[str, dict[str, Any]] = Field(
         default_factory=dict
     )
-    returns: dict[str, Any]
+    returns: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_definition(self) -> Self:
@@ -471,47 +422,21 @@ class FunctionTool(BaseModel):
             If name, description, parameters, or returns fail validation
             checks.
         """
-        if not self.name.strip():
-            raise ValueError("Function name cannot be blank")
-
-        if not self.description.strip():
-            raise ValueError(
-                f"Description for function '{self.name}' cannot be blank"
-            )
-
-        _check_json_strings(self.name, "name")
-        _check_json_strings(self.description, "description")
+        _check_name("Function", self.name)
 
         for param_name, param_schema in self.parameters.items():
-            if not param_name.strip():
-                raise ValueError(
-                    f"Function '{self.name}' has a blank parameter name"
-                )
-
-            _check_json_strings(
-                param_name,
-                f"{self.name}.parameter_name",
-            )
+            _check_name("Parameter", param_name)
 
             _validate_schema(
                 param_schema,
                 f"{self.name}.parameters.{param_name}",
             )
 
-            _check_json_strings(
-                param_schema,
-                f"{self.name}.parameters.{param_name}",
+        if self.returns:
+            _validate_schema(
+                self.returns,
+                f"{self.name}.returns",
             )
-
-        _validate_schema(
-            self.returns,
-            f"{self.name}.returns",
-        )
-
-        _check_json_strings(
-            self.returns,
-            f"{self.name}.returns",
-        )
 
         return self
 
@@ -612,28 +537,7 @@ class UserQuery(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    prompt: str = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def validate_prompt(self) -> Self:
-        """
-        Reject prompts containing only whitespace and validate string content.
-
-        Returns
-        -------
-        Self
-            The validated UserQuery instance.
-
-        Raises
-        ------
-        ValueError
-            If the prompt is empty or consists solely of whitespace.
-        """
-        if not self.prompt.strip():
-            raise ValueError("Prompt cannot be blank")
-
-        _check_json_strings(self.prompt, "prompt")
-        return self
+    prompt: str
 
 
 def load_functions_definition(
@@ -746,10 +650,5 @@ def load_user_queries(file_path: str) -> list[UserQuery]:
         raise InputFileError(
             f"Invalid user query in '{file_path}':\n{exc}"
         ) from exc
-
-    if not tests:
-        raise InputFileError(
-            f"User query file '{file_path}' contains no queries"
-        )
 
     return tests
